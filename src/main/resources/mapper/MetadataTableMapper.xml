@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.datawarehouse.metadata.mapper.MetadataTableMapper">
+
+    <!-- 通用查询映射结果 -->
+    <resultMap id="BaseResultMap" type="com.datawarehouse.metadata.entity.MetadataTable">
+        <id column="id" property="id" />
+        <result column="table_name" property="tableName" />
+        <result column="table_comment" property="tableComment" />
+        <result column="database_name" property="databaseName" />
+        <result column="table_type" property="tableType" />
+        <result column="engine" property="engine" />
+        <result column="charset" property="charset" />
+        <result column="row_count" property="rowCount" />
+        <result column="data_size" property="dataSize" />
+        <result column="create_by" property="createBy" />
+        <result column="create_time" property="createTime" />
+        <result column="update_by" property="updateBy" />
+        <result column="update_time" property="updateTime" />
+        <result column="deleted" property="deleted" />
+    </resultMap>
+
+</mapper>
