@@ -1,0 +1,2784 @@
+# 数据仓库元数据管理系统架构设计文档
+
+## 文档信息
+
+| 项目名称 | 数据仓库元数据管理系统 (Metadata Management System) |
+|---------|------------------------------------------|
+| 版本    | 1.0.0                                     |
+| 日期    | 2026-01-10                                |
+| 作者    | System Architecture Team                  |
+| 状态    | 设计阶段                                   |
+
+---
+
+## 目录
+
+1. [系统概述](#1-系统概述)
+2. [总体架构设计](#2-总体架构设计)
+3. [技术架构](#3-技术架构)
+4. [应用架构](#4-应用架构)
+5. [数据架构](#5-数据架构)
+6. [数据字典与配置项](#6-数据字典与配置项)
+7. [部署架构](#7-部署架构)
+8. [安全架构](#8-安全架构)
+9. [核心模块设计](#9-核心模块设计)
+10. [接口设计](#10-接口设计)
+11. [数据流设计](#11-数据流设计)
+12. [关键技术方案](#12-关键技术方案)
+13. [非功能性需求](#13-非功能性需求)
+14. [架构演进规划](#14-架构演进规划)
+
+---
+
+## 1. 系统概述
+
+### 1.1 系统定位
+
+数据仓库元数据管理系统是一个企业级的元数据管理平台，旨在统一管理公司多数据源（Hive、BigQuery、ClickHouse、StarRocks等）的元数据信息，提供表/字段级别的元数据查询、创建、修改、审批、血缘分析等核心能力。
+
+### 1.2 核心价值
+
+- **统一管理**：多数据源元数据统一管理，避免信息孤岛
+- **高效检索**：基于Elasticsearch的高性能全文检索能力
+- **质量保障**：通过审批流程保障数据仓库表变更的质量
+- **血缘追溯**：基于图数据库的表/字段级血缘关系管理
+- **标准规范**：数据标准、命名规范、词根管理等标准化能力
+
+### 1.3 业务范围
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    元数据管理系统业务范围                         │
+├─────────────────────────────────────────────────────────────┤
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
+│  │ 表查询搜索  │  │ 表创建修改  │  │ 数据标准   │  │ 数仓管理   │   │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘   │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐                 │
+│  │ 操作历史   │  │ 审批管理   │  │ 数据血缘   │                 │
+│  └──────────┘  └──────────┘  └──────────┘                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 1.4 系统边界
+
+**系统内**：
+- 元数据信息的CRUD操作
+- 元数据检索与展示
+- 表创建/修改的审批流程
+- 数据标准与规范管理
+- 数据血缘关系管理
+- 操作审计与历史记录
+
+**系统外**：
+- 实际数据仓库表的DDL执行（调用外部引擎）
+- 数据质量监控
+- 数据开发IDE
+- 任务调度系统
+
+---
+
+## 2. 总体架构设计
+
+### 2.1 架构风格
+
+采用**分层架构 + 微服务架构**的混合模式：
+- **分层架构**：单体应用内部采用严格的三层架构（Controller-Service-Mapper）
+- **微服务化预留**：模块边界清晰，为未来拆分为微服务预留空间
+- **前后端分离**：前端采用Ant Design，后端提供RESTful API
+
+### 2.2 架构全景图
+
+```
+┌───────────────────────────────────────────────────────────────────────┐
+│                          前端展示层 (React + Ant Design)                │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐            │
+│  │ 表查询     │  │ 表管理     │  │ 数据标准   │  │ 审批中心   │            │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘            │
+└───────────────────────────────────────────────────────────────────────┘
+                                    ↓ HTTP/HTTPS
+┌───────────────────────────────────────────────────────────────────────┐
+│                         接入层 (Gateway + Auth)                        │
+│              ┌──────────────┐      ┌──────────────┐                  │
+│              │  API Gateway  │      │  认证授权中心  │                  │
+│              └──────────────┘      └──────────────┘                  │
+└───────────────────────────────────────────────────────────────────────┘
+                                    ↓
+┌───────────────────────────────────────────────────────────────────────┐
+│                     应用层 (Spring Boot Application)                   │
+│  ┌─────────────────────────────────────────────────────────────────┐ │
+│  │                      Controller层 (REST API)                     │ │
+│  └─────────────────────────────────────────────────────────────────┘ │
+│  ┌─────────────────────────────────────────────────────────────────┐ │
+│  │                         Service层 (业务逻辑)                       │ │
+│  │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐       │ │
+│  │  │表管理   │ │字段管理 │ │标准管理 │ │审批流程 │ │血缘分析 │       │ │
+│  │  └────────┘ └────────┘ └────────┘ └────────┘ └────────┘       │ │
+│  └─────────────────────────────────────────────────────────────────┘ │
+│  ┌─────────────────────────────────────────────────────────────────┐ │
+│  │                      Mapper层 (数据访问)                          │ │
+│  └─────────────────────────────────────────────────────────────────┘ │
+└───────────────────────────────────────────────────────────────────────┘
+                                    ↓
+┌───────────────────────────────────────────────────────────────────────┐
+│                           数据存储层                                   │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐            │
+│  │  MySQL    │  │Elasticsearch│ │  Redis    │  │NebulaGraph│          │
+│  │(元数据存储) │  │  (搜索)    │  │  (缓存)   │  │  (血缘)   │          │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘            │
+└───────────────────────────────────────────────────────────────────────┘
+                                    ↓
+┌───────────────────────────────────────────────────────────────────────┐
+│                          外部系统集成层                                 │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐            │
+│  │  Hive     │  │ BigQuery  │  │ClickHouse │ │ StarRocks │           │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘            │
+└───────────────────────────────────────────────────────────────────────┘
+```
+
+### 2.3 架构分层说明
+
+| 层次 | 职责 | 关键技术 |
+|-----|------|---------|
+| **前端展示层** | 用户交互界面，数据展示与操作 | React、Ant Design、TypeScript |
+| **接入层** | API网关、认证鉴权、流量控制 | Spring Cloud Gateway、JWT |
+| **应用层** | 业务逻辑处理、数据编排 | Spring Boot、MyBatis Plus |
+| **数据存储层** | 数据持久化、缓存、搜索、图存储 | MySQL、Redis、ES、Nebula Graph |
+| **外部系统层** | 数据仓库引擎集成、SQL执行 | JDBC、REST API |
+
+### 2.4 核心设计原则
+
+1. **单一职责**：每个模块/类/方法只负责一个职责
+2. **高内聚低耦合**：模块内部紧密相关，模块间依赖最小化
+3. **开闭原则**：对扩展开放，对修改关闭（如多数据源扩展）
+4. **依赖倒置**：依赖抽象而非具体实现
+5. **DRY原则**：避免代码重复
+6. **最小惊讶原则**：接口设计符合直觉和习惯
+
+---
+
+## 3. 技术架构
+
+### 3.1 技术选型总览
+
+| 技术分类 | 技术选型 | 版本 | 用途说明 |
+|---------|---------|------|---------|
+| **后端框架** | Spring Boot | 2.7.x | 应用框架 |
+| **ORM框架** | MyBatis Plus | 3.5.x | 数据持久化 |
+| **关系数据库** | MySQL | 8.0+ | 元数据存储 |
+| **搜索引擎** | Elasticsearch | 7.17.x | 全文检索 |
+| **缓存** | Redis | 6.2+ | 数据缓存、分布式锁 |
+| **图数据库** | Nebula Graph | 3.x | 血缘关系存储 |
+| **接口文档** | Knife4j | 4.x | API文档生成 |
+| **日志框架** | SLF4J + Logback | - | 日志管理 |
+| **工具库** | Hutool、Lombok | - | 工具类、代码简化 |
+| **数据校验** | Hibernate Validator | - | 参数校验 |
+| **JSON处理** | Jackson | - | JSON序列化 |
+| **HTTP客户端** | OkHttp | 4.x | 外部API调用 |
+| **连接池** | HikariCP | - | 数据库连接池 |
+
+### 3.2 技术架构分层
+
+```
+┌────────────────────────────────────────────────────────────┐
+│                     技术架构分层视图                          │
+├────────────────────────────────────────────────────────────┤
+│  展示层技术栈                                                │
+│  React 18 + Ant Design 5 + Axios + TypeScript              │
+├────────────────────────────────────────────────────────────┤
+│  应用层技术栈                                                │
+│  Spring Boot 2.7 + Spring MVC + Spring AOP                │
+│  Knife4j (Swagger) + Hibernate Validator                  │
+├────────────────────────────────────────────────────────────┤
+│  业务层技术栈                                                │
+│  Spring IoC + Spring Transaction                          │
+│  策略模式(多数据源) + 模板方法模式(审批流程)                    │
+├────────────────────────────────────────────────────────────┤
+│  持久层技术栈                                                │
+│  MyBatis Plus 3.5 + HikariCP + MySQL 8.0                  │
+│  Elasticsearch 7.17 (Spring Data Elasticsearch)           │
+│  Nebula Graph 3.x (Nebula Java Client)                    │
+├────────────────────────────────────────────────────────────┤
+│  缓存技术栈                                                  │
+│  Redis 6.2 + Redisson + Spring Cache                      │
+├────────────────────────────────────────────────────────────┤
+│  基础设施技术栈                                              │
+│  Logback + SLF4J + ELK (日志)                              │
+│  Prometheus + Grafana (监控)                               │
+│  Docker + Kubernetes (部署)                                │
+└────────────────────────────────────────────────────────────┘
+```
+
+### 3.3 核心技术说明
+
+#### 3.3.1 为什么选择MySQL作为主存储？
+
+- **成熟稳定**：企业级数据库，事务支持完善
+- **生态丰富**：与Spring Boot、MyBatis Plus无缝集成
+- **关系建模**：元数据实体间存在复杂关系（表-字段、主题-分层等）
+- **ACID保证**：审批流程等关键业务需要事务保证
+
+#### 3.3.2 为什么引入Elasticsearch？
+
+- **快速检索**：全文检索性能远超MySQL LIKE查询
+- **模糊匹配**：支持表名、字段名、库名的模糊搜索
+- **分词能力**：中文分词、拼音搜索等高级功能
+- **扩展性**：水平扩展能力强，支持海量数据检索
+
+#### 3.3.3 为什么使用Nebula Graph？
+
+- **图模型**：血缘关系天然是图结构（表→表、字段→字段）
+- **查询性能**：图数据库对关系查询性能远超关系数据库
+- **深度遍历**：支持N度血缘查询
+- **开源生态**：国内开源图数据库，社区活跃
+
+#### 3.3.4 为什么使用Redis？
+
+- **高性能缓存**：热点数据（如主题、分层枚举）缓存
+- **分布式锁**：审批流程的并发控制
+- **会话存储**：用户登录态管理
+- **计数器**：访问统计、热度排名
+
+---
+
+## 4. 应用架构
+
+### 4.1 包结构设计
+
+```
+com.datawarehouse.metadata
+├── controller/                    # 控制层
+│   ├── MetadataTableController    # 表管理控制器
+│   ├── MetadataFieldController    # 字段管理控制器
+│   ├── DataStandardController     # 数据标准控制器
+│   ├── WarehouseController        # 数仓管理控制器
+│   ├── ApprovalController         # 审批管理控制器
+│   └── LineageController          # 血缘管理控制器
+│
+├── service/                       # 服务接口层
+│   ├── IMetadataTableService      # 表服务接口
+│   ├── IMetadataFieldService      # 字段服务接口
+│   ├── IDataStandardService       # 数据标准服务接口
+│   ├── IWarehouseService          # 数仓管理服务接口
+│   ├── IApprovalService           # 审批服务接口
+│   ├── ILineageService            # 血缘服务接口
+│   ├── ISearchService             # 搜索服务接口
+│   └── impl/                      # 服务实现
+│       ├── MetadataTableServiceImpl
+│       ├── MetadataFieldServiceImpl
+│       ├── DataStandardServiceImpl
+│       ├── WarehouseServiceImpl
+│       ├── ApprovalServiceImpl
+│       ├── LineageServiceImpl
+│       └── SearchServiceImpl
+│
+├── mapper/                        # 数据访问层
+│   ├── MetadataTableMapper        # 表Mapper
+│   ├── MetadataFieldMapper        # 字段Mapper
+│   ├── DataStandardMapper         # 数据标准Mapper
+│   ├── WarehouseMapper            # 数仓管理Mapper
+│   └── ApprovalMapper             # 审批Mapper
+│
+├── entity/                        # 实体类（DO）
+│   ├── MetadataTable              # 表实体
+│   ├── MetadataField              # 字段实体
+│   ├── DataStandard               # 数据标准实体
+│   ├── Warehouse                  # 数仓实体
+│   ├── Approval                   # 审批实体
+│   └── OperationHistory           # 操作历史实体
+│
+├── dto/                           # 数据传输对象
+│   ├── request/                   # 请求DTO
+│   │   ├── TableCreateRequest     # 表创建请求
+│   │   ├── TableUpdateRequest     # 表更新请求
+│   │   ├── TableSearchRequest     # 表搜索请求
+│   │   └── ApprovalRequest        # 审批请求
+│   └── response/                  # 响应DTO
+│       ├── TableDetailResponse    # 表详情响应
+│       ├── TableSearchResponse    # 表搜索响应
+│       └── ApprovalResponse       # 审批响应
+│
+├── vo/                            # 视图对象
+│   ├── TableVO                    # 表视图对象
+│   ├── FieldVO                    # 字段视图对象
+│   └── LineageVO                  # 血缘视图对象
+│
+├── config/                        # 配置类
+│   ├── MybatisPlusConfig          # MyBatis Plus配置
+│   ├── RedisConfig                # Redis配置
+│   ├── ElasticsearchConfig        # ES配置
+│   ├── NebulaGraphConfig          # Nebula配置
+│   ├── Knife4jConfig              # Swagger配置
+│   └── WebMvcConfig               # Web配置
+│
+├── common/                        # 通用类
+│   ├── result/                    # 统一响应
+│   │   ├── Result<T>              # 统一返回结果
+│   │   ├── ResultCode             # 结果码枚举
+│   │   └── PageResult<T>          # 分页结果
+│   ├── constant/                  # 常量类
+│   │   ├── CacheConstants         # 缓存常量
+│   │   ├── TableConstants         # 表常量
+│   │   └── ApprovalConstants      # 审批常量
+│   └── base/                      # 基类
+│       ├── BaseEntity             # 实体基类
+│       └── BaseController         # 控制器基类
+│
+├── exception/                     # 异常类
+│   ├── BusinessException          # 业务异常
+│   ├── SystemException            # 系统异常
+│   ├── GlobalExceptionHandler     # 全局异常处理器
+│   └── ErrorCode                  # 错误码枚举
+│
+├── util/                          # 工具类
+│   ├── SqlGeneratorUtil           # SQL生成工具
+│   ├── CacheUtil                  # 缓存工具
+│   └── ValidationUtil             # 校验工具
+│
+├── enums/                         # 枚举类
+│   ├── DataSourceTypeEnum         # 数据源类型
+│   ├── WarehouseLayerEnum         # 数仓分层
+│   ├── SensitivityLevelEnum       # 敏感等级
+│   ├── ImportanceLevelEnum        # 重要等级
+│   ├── ApprovalStatusEnum         # 审批状态
+│   └── FieldTypeEnum              # 字段类型
+│
+├── strategy/                      # 策略模式
+│   ├── datasource/                # 数据源策略
+│   │   ├── DataSourceStrategy     # 数据源策略接口
+│   │   ├── HiveStrategy           # Hive策略实现
+│   │   ├── BigQueryStrategy       # BigQuery策略实现
+│   │   └── ClickHouseStrategy     # ClickHouse策略实现
+│   └── approval/                  # 审批策略
+│       ├── ApprovalStrategy       # 审批策略接口
+│       └── TableChangeApproval    # 表变更审批实现
+│
+├── integration/                   # 外部系统集成
+│   ├── hive/                      # Hive集成
+│   ├── bigquery/                  # BigQuery集成
+│   └── clickhouse/                # ClickHouse集成
+│
+└── aspect/                        # 切面
+    ├── LogAspect                  # 日志切面
+    ├── CacheAspect                # 缓存切面
+    └── PermissionAspect           # 权限切面（预留）
+```
+
+### 4.2 分层架构详解
+
+#### 4.2.1 Controller层职责
+
+```java
+/**
+ * 元数据表控制器
+ *
+ * 职责：
+ * 1. 接收HTTP请求，参数校验
+ * 2. 调用Service层处理业务逻辑
+ * 3. 封装统一响应结果
+ * 4. 异常向上抛出，由GlobalExceptionHandler处理
+ *
+ * @author System
+ * @since 1.0.0
+ */
+@RestController
+@RequestMapping("/api/metadata/tables")
+@Api(tags = "元数据表管理")
+public class MetadataTableController {
+
+    private final IMetadataTableService metadataTableService;
+
+    /**
+     * 分页查询表信息
+     */
+    @GetMapping("/page")
+    @ApiOperation("分页查询表信息")
+    public Result<PageResult<TableVO>> page(@Valid TableSearchRequest request) {
+        // Controller只负责调用Service，不包含业务逻辑
+        PageResult<TableVO> result = metadataTableService.pageQuery(request);
+        return Result.success(result);
+    }
+}
+```
+
+#### 4.2.2 Service层职责
+
+```java
+/**
+ * 元数据表服务接口
+ *
+ * 职责：
+ * 1. 定义业务逻辑接口
+ * 2. 事务控制
+ * 3. 缓存管理
+ * 4. 业务规则校验
+ * 5. 数据编排（调用多个Mapper、第三方服务）
+ *
+ * @author System
+ * @since 1.0.0
+ */
+public interface IMetadataTableService {
+
+    /**
+     * 分页查询表信息
+     *
+     * @param request 查询条件
+     * @return 分页结果
+     */
+    PageResult<TableVO> pageQuery(TableSearchRequest request);
+
+    /**
+     * 创建表（包含审批流程）
+     *
+     * @param request 创建请求
+     * @return 表ID
+     */
+    @Transactional(rollbackFor = Exception.class)
+    Long createTable(TableCreateRequest request);
+}
+```
+
+#### 4.2.3 Mapper层职责
+
+```java
+/**
+ * 元数据表Mapper
+ *
+ * 职责：
+ * 1. 数据库CRUD操作
+ * 2. 复杂SQL封装
+ * 3. 只负责数据访问，不包含业务逻辑
+ *
+ * @author System
+ * @since 1.0.0
+ */
+@Mapper
+public interface MetadataTableMapper extends BaseMapper<MetadataTable> {
+
+    /**
+     * 根据库名和表名查询
+     */
+    MetadataTable selectByDatabaseAndTable(
+        @Param("databaseName") String databaseName,
+        @Param("tableName") String tableName
+    );
+}
+```
+
+### 4.3 依赖关系规则
+
+```
+Controller层
+    ↓ 允许调用
+Service层
+    ↓ 允许调用
+Mapper层
+
+禁止：
+❌ Controller → Mapper（跨层调用）
+❌ Mapper → Service（反向依赖）
+❌ Service A → Service B → Service A（循环依赖）
+```
+
+---
+
+## 5. 数据架构
+
+### 5.1 核心实体模型（ER图）
+
+```
+┌─────────────────────┐           ┌─────────────────────┐
+│  metadata_database  │           │   metadata_table    │
+├─────────────────────┤           ├─────────────────────┤
+│ id (PK)             │           │ id (PK)             │
+│ database_name       │◄──────────│ database_id (FK)    │
+│ data_source_type    │   1    N  │ table_name          │
+│ hive_account        │           │ table_desc (富文本)  │
+│ create_time         │           │ data_source_type    │
+│ update_time         │           │ hive_account        │
+│ deleted             │           │ table_size          │
+└─────────────────────┘           │ warehouse_layer     │
+                                  │ primary_theme       │
+                                  │ secondary_theme     │
+                                  │ sensitivity_level   │
+                                  │ importance_level    │
+                                  │ owner               │
+                                  │ partition_type      │
+                                  │ partition_retain_days│
+                                  │ update_frequency    │
+                                  │ custom_tags         │
+                                  │ create_time         │
+                                  │ update_time         │
+                                  │ deleted             │
+                                  └─────────────────────┘
+                                           │
+                                           │ 1
+                                           │
+                                           │ N
+                                           ↓
+                                  ┌─────────────────────┐
+                                  │  metadata_field     │
+                                  ├─────────────────────┤
+                                  │ id (PK)             │
+                                  │ table_id (FK)       │
+                                  │ field_index         │
+                                  │ field_name          │
+                                  │ field_desc (富文本)  │
+                                  │ field_type          │
+                                  │ is_primary_key      │
+                                  │ is_nullable         │
+                                  │ is_encrypted        │
+                                  │ sensitivity_level   │
+                                  │ create_time         │
+                                  │ update_time         │
+                                  │ deleted             │
+                                  └─────────────────────┘
+
+┌─────────────────────┐           ┌─────────────────────┐
+│  approval_flow      │           │   approval_node     │
+├─────────────────────┤           ├─────────────────────┤
+│ id (PK)             │           │ id (PK)             │
+│ business_type       │◄──────────│ flow_id (FK)        │
+│ business_id         │   1    N  │ node_order          │
+│ applicant           │           │ approver            │
+│ status              │           │ node_status         │
+│ create_time         │           │ approval_time       │
+│ update_time         │           │ approval_comment    │
+└─────────────────────┘           │ create_time         │
+                                  └─────────────────────┘
+
+┌─────────────────────┐
+│ operation_history   │
+├─────────────────────┤
+│ id (PK)             │
+│ business_type       │
+│ business_id         │
+│ operation_type      │
+│ operator            │
+│ operation_desc      │
+│ before_data (JSON)  │
+│ after_data (JSON)   │
+│ create_time         │
+└─────────────────────┘
+
+┌─────────────────────┐
+│ data_standard       │
+├─────────────────────┤
+│ id (PK)             │
+│ standard_type       │ (维度/标准字段/词根)
+│ standard_name       │
+│ standard_desc       │
+│ standard_value      │
+│ parent_id           │
+│ create_time         │
+│ update_time         │
+│ deleted             │
+└─────────────────────┘
+```
+
+### 5.2 数据库表设计
+
+#### 5.2.1 元数据表 (metadata_table)
+
+```sql
+CREATE TABLE `metadata_table` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `database_id` BIGINT NOT NULL COMMENT '所属库ID',
+  `table_name` VARCHAR(255) NOT NULL COMMENT '表名',
+  `table_desc` TEXT COMMENT '表描述（富文本）',
+  `data_source_type` VARCHAR(50) NOT NULL COMMENT '数据源类型：Hive/BigQuery/ClickHouse/StarRocks/Paimon/Iceberg',
+  `hive_account` VARCHAR(100) COMMENT 'Hive账号（租户）',
+  `table_size` BIGINT DEFAULT 0 COMMENT '表大小（字节）',
+  `warehouse_layer` VARCHAR(50) COMMENT '数仓分层：ods/edw/cdm/mid/dim',
+  `primary_theme` VARCHAR(50) COMMENT '一级主题：usr/mkt/ord/fin/prd/prj',
+  `secondary_theme` VARCHAR(50) COMMENT '二级主题',
+  `sensitivity_level` VARCHAR(10) COMMENT '敏感等级：L1/L2/L3/L4',
+  `importance_level` VARCHAR(10) COMMENT '重要等级：P0/P1/P2/P3',
+  `owner` VARCHAR(100) COMMENT '责任人（域账号）',
+  `partition_type` VARCHAR(50) COMMENT '分区类型：FULL/INCR',
+  `partition_retain_days` INT COMMENT '分区保留天数',
+  `update_frequency` VARCHAR(50) COMMENT '更新频率',
+  `custom_tags` VARCHAR(500) COMMENT '自定义标签（JSON数组）',
+  `create_sql` TEXT COMMENT '建表SQL',
+  `create_by` VARCHAR(100) COMMENT '创建人',
+  `create_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_by` VARCHAR(100) COMMENT '修改人',
+  `update_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `deleted` TINYINT NOT NULL DEFAULT 0 COMMENT '删除标识：0未删除，1已删除',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_database_table` (`database_id`, `table_name`, `deleted`),
+  KEY `idx_data_source_type` (`data_source_type`),
+  KEY `idx_warehouse_layer` (`warehouse_layer`),
+  KEY `idx_primary_theme` (`primary_theme`),
+  KEY `idx_owner` (`owner`),
+  KEY `idx_create_time` (`create_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='元数据表信息';
+```
+
+#### 5.2.2 元数据字段 (metadata_field)
+
+```sql
+CREATE TABLE `metadata_field` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `table_id` BIGINT NOT NULL COMMENT '所属表ID',
+  `field_index` INT NOT NULL COMMENT '字段序号',
+  `field_name` VARCHAR(255) NOT NULL COMMENT '字段名称',
+  `field_desc` TEXT COMMENT '字段描述（富文本）',
+  `field_type` VARCHAR(100) NOT NULL COMMENT '字段类型：根据数据源确定',
+  `is_primary_key` TINYINT DEFAULT 0 COMMENT '是否主键：0否，1是',
+  `is_nullable` TINYINT DEFAULT 1 COMMENT '是否可为空：0否，1是',
+  `is_encrypted` TINYINT DEFAULT 0 COMMENT '是否加密：0否，1是',
+  `is_partition_key` TINYINT DEFAULT 0 COMMENT '是否分区键：0否，1是',
+  `sensitivity_level` VARCHAR(10) COMMENT '敏感等级：L1/L2/L3/L4',
+  `default_value` VARCHAR(500) COMMENT '默认值',
+  `create_by` VARCHAR(100) COMMENT '创建人',
+  `create_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_by` VARCHAR(100) COMMENT '修改人',
+  `update_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  `deleted` TINYINT NOT NULL DEFAULT 0 COMMENT '删除标识：0未删除，1已删除',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_table_field` (`table_id`, `field_name`, `deleted`),
+  KEY `idx_table_id` (`table_id`),
+  KEY `idx_field_name` (`field_name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='元数据字段信息';
+```
+
+#### 5.2.3 审批流程 (approval_flow)
+
+```sql
+CREATE TABLE `approval_flow` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `business_type` VARCHAR(50) NOT NULL COMMENT '业务类型：TABLE_CREATE/TABLE_UPDATE',
+  `business_id` BIGINT NOT NULL COMMENT '业务ID（表ID）',
+  `applicant` VARCHAR(100) NOT NULL COMMENT '申请人',
+  `status` VARCHAR(50) NOT NULL COMMENT '状态：PENDING/APPROVED/REJECTED/CANCELLED',
+  `apply_reason` TEXT COMMENT '申请理由',
+  `create_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  KEY `idx_business` (`business_type`, `business_id`),
+  KEY `idx_applicant` (`applicant`),
+  KEY `idx_status` (`status`),
+  KEY `idx_create_time` (`create_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='审批流程表';
+```
+
+#### 5.2.4 操作历史 (operation_history)
+
+```sql
+CREATE TABLE `operation_history` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  `business_type` VARCHAR(50) NOT NULL COMMENT '业务类型：TABLE/FIELD/STANDARD',
+  `business_id` BIGINT NOT NULL COMMENT '业务ID',
+  `operation_type` VARCHAR(50) NOT NULL COMMENT '操作类型：CREATE/UPDATE/DELETE',
+  `operator` VARCHAR(100) NOT NULL COMMENT '操作人',
+  `operation_desc` VARCHAR(500) COMMENT '操作描述',
+  `before_data` JSON COMMENT '变更前数据',
+  `after_data` JSON COMMENT '变更后数据',
+  `create_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '操作时间',
+  PRIMARY KEY (`id`),
+  KEY `idx_business` (`business_type`, `business_id`),
+  KEY `idx_operator` (`operator`),
+  KEY `idx_create_time` (`create_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='操作历史表';
+```
+
+### 5.3 Elasticsearch索引设计
+
+#### 5.3.1 表元数据索引 (metadata_table_index)
+
+```json
+{
+  "settings": {
+    "number_of_shards": 3,
+    "number_of_replicas": 1,
+    "analysis": {
+      "analyzer": {
+        "ik_smart_pinyin": {
+          "type": "custom",
+          "tokenizer": "ik_smart",
+          "filter": ["pinyin"]
+        }
+      },
+      "filter": {
+        "pinyin": {
+          "type": "pinyin",
+          "keep_first_letter": true,
+          "keep_full_pinyin": false,
+          "keep_joined_full_pinyin": true
+        }
+      }
+    }
+  },
+  "mappings": {
+    "properties": {
+      "id": {"type": "long"},
+      "database_name": {
+        "type": "text",
+        "analyzer": "ik_smart_pinyin",
+        "fields": {
+          "keyword": {"type": "keyword"}
+        }
+      },
+      "table_name": {
+        "type": "text",
+        "analyzer": "ik_smart_pinyin",
+        "fields": {
+          "keyword": {"type": "keyword"}
+        }
+      },
+      "table_desc": {
+        "type": "text",
+        "analyzer": "ik_max_word"
+      },
+      "data_source_type": {"type": "keyword"},
+      "warehouse_layer": {"type": "keyword"},
+      "primary_theme": {"type": "keyword"},
+      "secondary_theme": {"type": "keyword"},
+      "owner": {"type": "keyword"},
+      "sensitivity_level": {"type": "keyword"},
+      "importance_level": {"type": "keyword"},
+      "create_time": {"type": "date"},
+      "update_time": {"type": "date"}
+    }
+  }
+}
+```
+
+#### 5.3.2 字段元数据索引 (metadata_field_index)
+
+```json
+{
+  "mappings": {
+    "properties": {
+      "id": {"type": "long"},
+      "table_id": {"type": "long"},
+      "database_name": {"type": "keyword"},
+      "table_name": {"type": "keyword"},
+      "field_name": {
+        "type": "text",
+        "analyzer": "ik_smart_pinyin",
+        "fields": {
+          "keyword": {"type": "keyword"}
+        }
+      },
+      "field_desc": {
+        "type": "text",
+        "analyzer": "ik_max_word"
+      },
+      "field_type": {"type": "keyword"},
+      "sensitivity_level": {"type": "keyword"}
+    }
+  }
+}
+```
+
+### 5.4 Redis缓存设计
+
+#### 5.4.1 缓存Key设计规范
+
+```
+缓存Key命名规范：{业务模块}:{数据类型}:{唯一标识}
+
+示例：
+- metadata:table:123                    # 表详情
+- metadata:field:list:123               # 表的字段列表
+- metadata:standard:dimension           # 维度标准列表
+- metadata:warehouse:layer              # 数仓分层枚举
+- metadata:theme:primary                # 一级主题枚举
+- metadata:hot:tables                   # 热门表排行
+```
+
+#### 5.4.2 缓存策略
+
+| 数据类型 | 缓存Key | 过期时间 | 更新策略 |
+|---------|---------|---------|---------|
+| 表详情 | metadata:table:{id} | 1小时 | 主动更新 |
+| 字段列表 | metadata:field:list:{tableId} | 1小时 | 主动更新 |
+| 枚举数据 | metadata:enum:{type} | 24小时 | 主动更新 |
+| 搜索热词 | metadata:hot:keywords | 1小时 | 被动过期 |
+| 用户会话 | metadata:session:{token} | 30分钟 | 滑动过期 |
+
+#### 5.4.3 缓存更新机制
+
+```java
+/**
+ * 缓存更新策略
+ *
+ * 1. Cache-Aside Pattern（旁路缓存）
+ *    - 读：先查缓存，未命中则查DB，写入缓存
+ *    - 写：先更新DB，再删除缓存
+ *
+ * 2. 防止缓存穿透
+ *    - 布隆过滤器
+ *    - 空值缓存（过期时间短）
+ *
+ * 3. 防止缓存击穿
+ *    - 热点数据永不过期
+ *    - 互斥锁（Redisson分布式锁）
+ *
+ * 4. 防止缓存雪崩
+ *    - 过期时间加随机值
+ *    - 多级缓存（本地缓存+Redis）
+ */
+```
+
+### 5.5 Nebula Graph血缘模型
+
+#### 5.5.1 图模型设计
+
+```
+点（Vertex）类型：
+- Table：表节点
+  - 属性：table_id, database_name, table_name, data_source_type
+- Field：字段节点
+  - 属性：field_id, table_id, field_name, field_type
+
+边（Edge）类型：
+- TABLE_DEPEND：表依赖关系
+  - 属性：dependency_type(direct/indirect), create_time
+- FIELD_DEPEND：字段依赖关系
+  - 属性：dependency_type, create_time, transform_logic
+```
+
+#### 5.5.2 血缘查询示例
+
+```cypher
+-- 查询表的上游依赖（N度）
+GO N STEPS FROM "table:123" OVER TABLE_DEPEND REVERSELY
+YIELD TABLE_DEPEND._dst AS upstream_table;
+
+-- 查询表的下游依赖（N度）
+GO N STEPS FROM "table:123" OVER TABLE_DEPEND
+YIELD TABLE_DEPEND._dst AS downstream_table;
+
+-- 查询字段级血缘
+GO 3 STEPS FROM "field:456" OVER FIELD_DEPEND REVERSELY
+YIELD FIELD_DEPEND._dst AS source_field,
+      FIELD_DEPEND.transform_logic AS logic;
+```
+
+---
+
+## 6. 数据字典与配置项
+
+### 6.1 枚举类型定义
+
+#### 6.1.1 数据源类型 (DataSourceTypeEnum)
+
+```java
+/**
+ * 数据源类型枚举
+ */
+public enum DataSourceTypeEnum {
+    HIVE("Hive", "Apache Hive"),
+    PAIMON("Paimon", "Apache Paimon"),
+    ICEBERG("Iceberg", "Apache Iceberg"),
+    CLICKHOUSE("ClickHouse", "ClickHouse"),
+    BIGQUERY("BigQuery", "Google BigQuery"),
+    STARROCKS("StarRocks", "StarRocks");
+
+    private final String code;
+    private final String desc;
+}
+```
+
+**数据库存储值**：
+- `Hive` - Apache Hive
+- `Paimon` - Apache Paimon（流批一体）
+- `Iceberg` - Apache Iceberg（数据湖）
+- `ClickHouse` - ClickHouse（OLAP数据库）
+- `BigQuery` - Google BigQuery（云原生数仓）
+- `StarRocks` - StarRocks（MPP数据库）
+
+#### 6.1.2 所属BU (BusinessUnitEnum)
+
+```java
+/**
+ * 业务单元枚举
+ */
+public enum BusinessUnitEnum {
+    FLIGHT("flight", "机票事业部"),
+    HOTEL("hotel", "酒店事业部"),
+    TRAIN("train", "火车票事业部"),
+    IBU("ibu", "国际业务事业部"),
+    CONTENT("content", "内容事业部");
+
+    private final String code;
+    private final String name;
+}
+```
+
+**配置说明**：
+| BU Code | BU名称 | 说明 |
+|---------|--------|------|
+| flight | 机票事业部 | 机票相关业务数据 |
+| hotel | 酒店事业部 | 酒店预订相关业务数据 |
+| train | 火车票事业部 | 火车票预订相关业务数据 |
+| ibu | 国际业务事业部 | 国际业务相关数据 |
+| content | 内容事业部 | 内容、营销相关数据 |
+
+#### 6.1.3 Hive账号/租户 (HiveAccountEnum)
+
+```java
+/**
+ * Hive账号（租户）枚举
+ */
+public enum HiveAccountEnum {
+    // 机票相关
+    FLIGHT("flight", "机票业务账号"),
+    FLIGHT_TECH("flight_tech", "机票技术账号"),
+
+    // 酒店相关
+    HOTEL("hotel", "酒店业务账号"),
+    HOTEL_TECH("hotel_tech", "酒店技术账号"),
+
+    // 火车票相关
+    TRAIN("train", "火车票业务账号"),
+    TRAIN_TECH("train_tech", "火车票技术账号"),
+
+    // BI工程相关
+    BIENG("bieng", "BI工程业务账号"),
+    BIENG_TECH("bieng_tech", "BI工程技术账号"),
+
+    // 其他
+    COMMON("common", "公共账号");
+
+    private final String account;
+    private final String desc;
+}
+```
+
+**租户说明**：
+| 租户账号 | 所属BU | 用途 | 权限级别 |
+|---------|--------|------|---------|
+| flight | 机票 | 机票业务数据访问 | 业务级 |
+| flight_tech | 机票 | 机票技术开发测试 | 技术级 |
+| hotel | 酒店 | 酒店业务数据访问 | 业务级 |
+| hotel_tech | 酒店 | 酒店技术开发测试 | 技术级 |
+| train | 火车票 | 火车票业务数据访问 | 业务级 |
+| train_tech | 火车票 | 火车票技术开发测试 | 技术级 |
+| bieng | BI工程 | BI业务数据访问 | 业务级 |
+| bieng_tech | BI工程 | BI技术开发测试 | 技术级 |
+| common | 公共 | 跨BU公共数据 | 公共级 |
+
+#### 6.1.4 数仓分层 (WarehouseLayerEnum)
+
+```java
+/**
+ * 数仓分层枚举
+ */
+public enum WarehouseLayerEnum {
+    ODS("ods", "操作数据层", "Operational Data Store", 1),
+    EDW("edw", "企业数据仓库层", "Enterprise Data Warehouse", 2),
+    CDM("cdm", "公共数据模型层", "Common Data Model", 3),
+    MID("mid", "中间层", "Middle Layer", 4),
+    DIM("dim", "维度层", "Dimension Layer", 5),
+    DWD("dwd", "明细数据层", "Data Warehouse Detail", 6),
+    DWS("dws", "汇总数据层", "Data Warehouse Summary", 7),
+    ADS("ads", "应用数据层", "Application Data Store", 8);
+
+    private final String code;
+    private final String name;
+    private final String fullName;
+    private final Integer level;
+}
+```
+
+**分层说明**：
+| 分层代码 | 分层名称 | 英文全称 | 数据特征 | 更新频率 |
+|---------|---------|---------|---------|---------|
+| **ods** | 操作数据层 | Operational Data Store | 源系统数据镜像，保持原始粒度 | 实时/T+1 |
+| **edw** | 企业数据仓库层 | Enterprise Data Warehouse | 整合后的企业级数据 | T+1 |
+| **cdm** | 公共数据模型层 | Common Data Model | 标准化的主题域数据 | T+1 |
+| **mid** | 中间层 | Middle Layer | 临时计算结果、中间表 | 按需 |
+| **dim** | 维度层 | Dimension Layer | 维度表（用户、产品、时间等） | T+1 |
+| **dwd** | 明细数据层 | Data Warehouse Detail | 清洗后的明细事实数据 | T+1 |
+| **dws** | 汇总数据层 | Data Warehouse Summary | 轻度汇总的主题数据 | T+1 |
+| **ads** | 应用数据层 | Application Data Store | 面向应用的个性化数据 | 按需 |
+
+#### 6.1.5 一级主题 (PrimaryThemeEnum)
+
+```java
+/**
+ * 一级主题枚举
+ */
+public enum PrimaryThemeEnum {
+    USR("usr", "User", "用户域", "用户相关数据"),
+    MKT("mkt", "Marketing", "营销域", "营销活动相关数据"),
+    ORD("ord", "Order", "订单域", "订单交易相关数据"),
+    FIN("fin", "Finance", "财务域", "财务结算相关数据"),
+    PRD("prd", "Product", "产品域", "产品信息相关数据"),
+    PRJ("prj", "Project Data", "项目数据域", "项目分析相关数据"),
+    TRF("trf", "Traffic", "流量域", "流量行为相关数据"),
+    SRV("srv", "Service", "服务域", "客户服务相关数据");
+
+    private final String code;
+    private final String englishName;
+    private final String chineseName;
+    private final String description;
+}
+```
+
+**一级主题配置**：
+| 主题代码 | 英文名称 | 中文名称 | 业务范围 |
+|---------|---------|---------|---------|
+| **usr** | User | 用户域 | 用户注册、用户画像、会员信息、用户行为 |
+| **mkt** | Marketing | 营销域 | 营销活动、优惠券、推广、渠道 |
+| **ord** | Order | 订单域 | 订单、支付、退款、订单状态 |
+| **fin** | Finance | 财务域 | 财务结算、账单、发票、成本核算 |
+| **prd** | Product | 产品域 | 产品信息、库存、价格、SKU |
+| **prj** | Project Data | 项目数据域 | 专项分析、项目数据、临时需求 |
+| **trf** | Traffic | 流量域 | 流量来源、访问行为、点击流 |
+| **srv** | Service | 服务域 | 客服工单、投诉、满意度 |
+
+#### 6.1.6 二级主题 (SecondaryThemeEnum)
+
+```java
+/**
+ * 二级主题枚举（与一级主题级联）
+ */
+public enum SecondaryThemeEnum {
+    // 用户域（usr）二级主题
+    USR_CON("con", "Consumer", "消费者", PrimaryThemeEnum.USR),
+    USR_MEM("mem", "Member", "会员", PrimaryThemeEnum.USR),
+    USR_UBT("ubt", "User Behavior Tracking", "用户行为追踪", PrimaryThemeEnum.USR),
+    USR_PROFILE("profile", "User Profile", "用户画像", PrimaryThemeEnum.USR),
+
+    // 营销域（mkt）二级主题
+    MKT_CAMPAIGN("campaign", "Campaign", "营销活动", PrimaryThemeEnum.MKT),
+    MKT_COUPON("coupon", "Coupon", "优惠券", PrimaryThemeEnum.MKT),
+    MKT_CHANNEL("channel", "Channel", "渠道", PrimaryThemeEnum.MKT),
+
+    // 订单域（ord）二级主题
+    ORD_FLIGHT("flight", "Flight Order", "机票订单", PrimaryThemeEnum.ORD),
+    ORD_HOTEL("hotel", "Hotel Order", "酒店订单", PrimaryThemeEnum.ORD),
+    ORD_TRAIN("train", "Train Order", "火车票订单", PrimaryThemeEnum.ORD),
+    ORD_PAY("pay", "Payment", "支付", PrimaryThemeEnum.ORD),
+    ORD_REFUND("refund", "Refund", "退款", PrimaryThemeEnum.ORD),
+
+    // 财务域（fin）二级主题
+    FIN_SETTLE("settle", "Settlement", "结算", PrimaryThemeEnum.FIN),
+    FIN_INVOICE("invoice", "Invoice", "发票", PrimaryThemeEnum.FIN),
+    FIN_COST("cost", "Cost", "成本", PrimaryThemeEnum.FIN),
+
+    // 产品域（prd）二级主题
+    PRD_INFO("info", "Product Info", "产品信息", PrimaryThemeEnum.PRD),
+    PRD_INVENTORY("inventory", "Inventory", "库存", PrimaryThemeEnum.PRD),
+    PRD_PRICE("price", "Price", "价格", PrimaryThemeEnum.PRD),
+
+    // 流量域（trf）二级主题
+    TRF_ACCESS("access", "Access", "访问", PrimaryThemeEnum.TRF),
+    TRF_CLICK("click", "Click Stream", "点击流", PrimaryThemeEnum.TRF),
+
+    // 服务域（srv）二级主题
+    SRV_TICKET("ticket", "Service Ticket", "服务工单", PrimaryThemeEnum.SRV),
+    SRV_COMPLAINT("complaint", "Complaint", "投诉", PrimaryThemeEnum.SRV);
+
+    private final String code;
+    private final String englishName;
+    private final String chineseName;
+    private final PrimaryThemeEnum primaryTheme;
+}
+```
+
+**二级主题级联关系**：
+
+| 一级主题 | 二级主题代码 | 二级主题名称 | 说明 |
+|---------|-------------|-------------|------|
+| **usr** (用户域) | con | 消费者 | C端用户相关数据 |
+| | mem | 会员 | 会员等级、权益相关 |
+| | ubt | 用户行为追踪 | 埋点、行为日志 |
+| | profile | 用户画像 | 用户标签、画像特征 |
+| **mkt** (营销域) | campaign | 营销活动 | 活动配置、活动效果 |
+| | coupon | 优惠券 | 优惠券发放、使用 |
+| | channel | 渠道 | 推广渠道、渠道效果 |
+| **ord** (订单域) | flight | 机票订单 | 机票订单相关 |
+| | hotel | 酒店订单 | 酒店订单相关 |
+| | train | 火车票订单 | 火车票订单相关 |
+| | pay | 支付 | 支付流水、支付方式 |
+| | refund | 退款 | 退款流水、退款原因 |
+| **fin** (财务域) | settle | 结算 | 财务结算数据 |
+| | invoice | 发票 | 发票信息 |
+| | cost | 成本 | 成本核算 |
+| **prd** (产品域) | info | 产品信息 | 产品基础信息 |
+| | inventory | 库存 | 库存数据 |
+| | price | 价格 | 价格策略 |
+| **trf** (流量域) | access | 访问 | 页面访问数据 |
+| | click | 点击流 | 用户点击行为 |
+| **srv** (服务域) | ticket | 服务工单 | 客服工单 |
+| | complaint | 投诉 | 用户投诉 |
+
+#### 6.1.7 敏感等级 (SensitivityLevelEnum)
+
+```java
+/**
+ * 敏感等级枚举
+ */
+public enum SensitivityLevelEnum {
+    L1("L1", "公开", "Public", "无敏感信息，可公开访问"),
+    L2("L2", "内部", "Internal", "内部数据，需登录访问"),
+    L3("L3", "敏感", "Sensitive", "敏感数据，需申请权限"),
+    L4("L4", "高度敏感", "Highly Sensitive", "高度敏感，严格权限控制");
+
+    private final String code;
+    private final String name;
+    private final String englishName;
+    private final String description;
+}
+```
+
+**敏感等级定义**：
+| 等级 | 名称 | 数据示例 | 访问控制 | 脱敏要求 |
+|-----|------|---------|---------|---------|
+| **L1** | 公开 | 公开统计数据、汇总数据 | 所有登录用户 | 无 |
+| **L2** | 内部 | 订单ID、用户ID（脱敏） | 需要基础权限 | 部分脱敏 |
+| **L3** | 敏感 | 手机号、邮箱、地址 | 需要申请权限 | 必须脱敏 |
+| **L4** | 高度敏感 | 身份证、银行卡、密码 | DBA+业务负责人审批 | 强制加密 |
+
+#### 6.1.8 重要等级 (ImportanceLevelEnum)
+
+```java
+/**
+ * 重要等级枚举
+ */
+public enum ImportanceLevelEnum {
+    P0("P0", "核心", "核心业务表，影响线上服务"),
+    P1("P1", "重要", "重要业务表，影响核心报表"),
+    P2("P2", "一般", "一般业务表，影响部分分析"),
+    P3("P3", "低", "临时表或测试表，影响较小");
+
+    private final String code;
+    private final String name;
+    private final String description;
+}
+```
+
+**重要等级定义**：
+| 等级 | 名称 | 业务影响 | SLA要求 | 变更审批 |
+|-----|------|---------|---------|---------|
+| **P0** | 核心 | 影响线上服务、核心报表 | 99.99% | DBA + 业务Leader |
+| **P1** | 重要 | 影响重要报表、日常分析 | 99.9% | DBA审批 |
+| **P2** | 一般 | 影响部分分析需求 | 99% | 责任人审批 |
+| **P3** | 低 | 临时表、测试表 | 无要求 | 自助创建 |
+
+#### 6.1.9 分区类型 (PartitionTypeEnum)
+
+```java
+/**
+ * 分区类型枚举
+ */
+public enum PartitionTypeEnum {
+    FULL("FULL", "全量分区", "每个分区包含全量数据快照"),
+    INCR("INCR", "增量分区", "每个分区仅包含增量变更数据"),
+    NONE("NONE", "无分区", "表不分区");
+
+    private final String code;
+    private final String name;
+    private final String description;
+}
+```
+
+**分区类型说明**：
+| 类型 | 名称 | 使用场景 | 存储特点 | 查询特点 |
+|-----|------|---------|---------|---------|
+| **FULL** | 全量分区 | 维度表、全量快照表 | 每个分区存储完整数据 | 查询单分区即可 |
+| **INCR** | 增量分区 | 事实表、日志表 | 每个分区仅存储增量 | 需跨分区汇总 |
+| **NONE** | 无分区 | 小表、配置表 | 无分区结构 | 全表扫描 |
+
+#### 6.1.10 更新频率 (UpdateFrequencyEnum)
+
+```java
+/**
+ * 更新频率枚举
+ */
+public enum UpdateFrequencyEnum {
+    REALTIME("REALTIME", "实时", "Real-time", "分钟级实时更新"),
+    HOURLY("HOURLY", "小时", "Hourly", "每小时更新"),
+    DAILY("DAILY", "天", "Daily", "每天更新（T+1）"),
+    WEEKLY("WEEKLY", "周", "Weekly", "每周更新"),
+    MONTHLY("MONTHLY", "月", "Monthly", "每月更新"),
+    ON_DEMAND("ON_DEMAND", "按需", "On Demand", "手动触发更新");
+
+    private final String code;
+    private final String name;
+    private final String englishName;
+    private final String description;
+}
+```
+
+**更新频率配置**：
+| 频率代码 | 名称 | 更新时间 | 适用场景 |
+|---------|------|---------|---------|
+| REALTIME | 实时 | 分钟级 | 实时流表、监控大盘 |
+| HOURLY | 小时 | 每小时整点 | 小时级汇总表 |
+| DAILY | 天 | 每天凌晨（T+1） | 日报表、维度表 |
+| WEEKLY | 周 | 每周一凌晨 | 周报表 |
+| MONTHLY | 月 | 每月1号凌晨 | 月报表 |
+| ON_DEMAND | 按需 | 手动触发 | 临时表、一次性分析 |
+
+#### 6.1.11 字段类型 (FieldTypeEnum)
+
+**Hive字段类型**：
+```java
+public enum HiveFieldTypeEnum {
+    // 数值类型
+    TINYINT, SMALLINT, INT, BIGINT, FLOAT, DOUBLE, DECIMAL,
+    // 字符串类型
+    STRING, VARCHAR, CHAR,
+    // 日期时间类型
+    TIMESTAMP, DATE,
+    // 布尔类型
+    BOOLEAN,
+    // 复杂类型
+    ARRAY, MAP, STRUCT, UNIONTYPE,
+    // 二进制类型
+    BINARY
+}
+```
+
+**BigQuery字段类型**：
+```java
+public enum BigQueryFieldTypeEnum {
+    // 数值类型
+    INT64, NUMERIC, BIGNUMERIC, FLOAT64,
+    // 布尔类型
+    BOOL,
+    // 字符串类型
+    STRING, BYTES,
+    // 日期时间类型
+    DATE, DATETIME, TIME, TIMESTAMP,
+    // 地理类型
+    GEOGRAPHY,
+    // 复杂类型
+    ARRAY, STRUCT, JSON
+}
+```
+
+**ClickHouse字段类型**：
+```java
+public enum ClickHouseFieldTypeEnum {
+    // 整数类型
+    UInt8, UInt16, UInt32, UInt64, Int8, Int16, Int32, Int64,
+    // 浮点类型
+    Float32, Float64, Decimal,
+    // 字符串类型
+    String, FixedString,
+    // 日期时间类型
+    Date, DateTime, DateTime64,
+    // 特殊类型
+    UUID, IPv4, IPv6,
+    // 复杂类型
+    Array, Tuple, Nested, Map
+}
+```
+
+#### 6.1.12 审批状态 (ApprovalStatusEnum)
+
+```java
+/**
+ * 审批状态枚举
+ */
+public enum ApprovalStatusEnum {
+    DRAFT("DRAFT", "草稿", "Draft"),
+    PENDING("PENDING", "待审批", "Pending"),
+    APPROVED("APPROVED", "已通过", "Approved"),
+    REJECTED("REJECTED", "已拒绝", "Rejected"),
+    CANCELLED("CANCELLED", "已取消", "Cancelled"),
+    PUBLISHED("PUBLISHED", "已发布", "Published");
+
+    private final String code;
+    private final String chineseName;
+    private final String englishName;
+}
+```
+
+**审批状态流转**：
+```
+DRAFT（草稿）
+    ↓ 提交审批
+PENDING（待审批）
+    ↓
+    ├→ APPROVED（已通过）→ PUBLISHED（已发布）
+    ├→ REJECTED（已拒绝）
+    └→ CANCELLED（已取消）
+```
+
+#### 6.1.13 操作类型 (OperationTypeEnum)
+
+```java
+/**
+ * 操作类型枚举
+ */
+public enum OperationTypeEnum {
+    CREATE("CREATE", "创建", "Create"),
+    UPDATE("UPDATE", "更新", "Update"),
+    DELETE("DELETE", "删除", "Delete"),
+    PUBLISH("PUBLISH", "发布", "Publish"),
+    APPROVE("APPROVE", "审批通过", "Approve"),
+    REJECT("REJECT", "审批拒绝", "Reject"),
+    QUERY("QUERY", "查询", "Query");
+
+    private final String code;
+    private final String chineseName;
+    private final String englishName;
+}
+```
+
+### 6.2 数据标准管理配置
+
+#### 6.2.1 维度管理
+
+**维度定义**：
+```java
+/**
+ * 维度表标准
+ */
+public class DimensionStandard {
+    private Long id;
+    private String dimensionCode;      // 维度代码（如：dim_user）
+    private String dimensionName;      // 维度名称（如：用户维度）
+    private String dimensionDesc;      // 维度描述
+    private String primaryKey;         // 主键字段
+    private List<String> businessKeys; // 业务主键
+    private String scdType;            // 缓慢变化维类型（SCD Type 1/2/3）
+    private Boolean isCommon;          // 是否公共维度
+}
+```
+
+**常见维度配置**：
+| 维度代码 | 维度名称 | 主键 | 业务主键 | SCD类型 | 说明 |
+|---------|---------|------|---------|---------|------|
+| dim_user | 用户维度 | user_sk | user_id | Type 2 | 用户基本信息 |
+| dim_product | 产品维度 | product_sk | product_id | Type 2 | 产品信息 |
+| dim_date | 日期维度 | date_key | date | Type 1 | 日期维度（固定） |
+| dim_geography | 地理维度 | geo_sk | city_code | Type 1 | 城市、省份、国家 |
+| dim_channel | 渠道维度 | channel_sk | channel_code | Type 1 | 营销渠道 |
+
+#### 6.2.2 标准字段
+
+**标准字段定义**：
+```java
+/**
+ * 标准字段配置
+ */
+public class StandardField {
+    private Long id;
+    private String fieldCode;          // 字段代码（如：user_id）
+    private String fieldName;          // 字段名称（如：用户ID）
+    private String fieldType;          // 字段类型（如：BIGINT）
+    private String fieldDesc;          // 字段描述
+    private String dataPattern;        // 数据格式（正则）
+    private String businessRule;       // 业务规则
+    private String relatedDimension;   // 关联维度
+}
+```
+
+**常用标准字段**：
+| 字段代码 | 字段名称 | 字段类型 | 数据格式 | 业务规则 | 关联维度 |
+|---------|---------|---------|---------|---------|---------|
+| user_id | 用户ID | BIGINT | ^[1-9]\d{9,18}$ | 唯一标识用户 | dim_user |
+| order_id | 订单ID | STRING | ^ORD\d{14}$ | 订单唯一标识 | - |
+| mobile | 手机号 | STRING | ^1[3-9]\d{9}$ | 11位手机号 | - |
+| email | 邮箱 | STRING | ^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$ | 邮箱格式 | - |
+| amount | 金额 | DECIMAL(18,2) | - | 保留2位小数 | - |
+| create_time | 创建时间 | DATETIME | yyyy-MM-dd HH:mm:ss | 精确到秒 | dim_date |
+| partition_date | 分区日期 | STRING | yyyyMMdd | 8位日期 | dim_date |
+
+#### 6.2.3 词根维护
+
+**词根定义**：
+```java
+/**
+ * 词根配置（命名规范）
+ */
+public class WordRoot {
+    private Long id;
+    private String rootWord;           // 词根（如：ord）
+    private String fullWord;           // 完整单词（如：order）
+    private String chineseName;        // 中文名称（如：订单）
+    private String category;           // 类别（主题/业务对象/操作/属性）
+    private String usageExample;       // 使用示例
+}
+```
+
+**词根分类配置**：
+
+**主题词根**：
+| 词根 | 完整单词 | 中文名称 | 使用示例 |
+|-----|---------|---------|---------|
+| usr | user | 用户 | usr_base_info |
+| ord | order | 订单 | ord_flight_info |
+| prd | product | 产品 | prd_hotel_info |
+| mkt | marketing | 营销 | mkt_campaign_info |
+| fin | finance | 财务 | fin_settlement_info |
+
+**业务对象词根**：
+| 词根 | 完整单词 | 中文名称 | 使用示例 |
+|-----|---------|---------|---------|
+| flt | flight | 航班 | flt_schedule |
+| htl | hotel | 酒店 | htl_room_type |
+| trn | train | 火车 | trn_ticket |
+| cpn | coupon | 优惠券 | cpn_usage |
+| pmt | payment | 支付 | pmt_transaction |
+
+**操作词根**：
+| 词根 | 完整单词 | 中文名称 | 使用示例 |
+|-----|---------|---------|---------|
+| crt | create | 创建 | crt_time |
+| upd | update | 更新 | upd_time |
+| del | delete | 删除 | del_flag |
+| pub | publish | 发布 | pub_status |
+| apv | approve | 审批 | apv_status |
+
+**属性词根**：
+| 词根 | 完整单词 | 中文名称 | 使用示例 |
+|-----|---------|---------|---------|
+| cnt | count | 数量 | order_cnt |
+| amt | amount | 金额 | total_amt |
+| avg | average | 平均 | avg_price |
+| max | maximum | 最大 | max_value |
+| min | minimum | 最小 | min_value |
+| dt | date | 日期 | partition_dt |
+
+### 6.3 数仓管理配置
+
+#### 6.3.1 数据规范
+
+**命名规范**：
+```yaml
+表命名规范:
+  格式: "{分层}_{一级主题}_{二级主题}_{业务对象}_{粒度}_{分区类型}"
+  示例:
+    - "cdm_ord_flight_order_detail_di"  # 公共层-订单域-机票-订单明细-天增量
+    - "dws_usr_mem_user_summary_dd"     # 汇总层-用户域-会员-用户汇总-天全量
+
+  后缀说明:
+    - di: day increment (天增量)
+    - dd: day dump (天全量)
+    - hi: hour increment (小时增量)
+    - hd: hour dump (小时全量)
+
+字段命名规范:
+  格式: 小写字母 + 下划线分隔
+  约束:
+    - 禁止使用数据库关键字
+    - 禁止使用拼音首字母缩写
+    - 必须使用标准词根
+  示例:
+    - 正确: user_id, order_amount, create_time
+    - 错误: userId, orderAmt, crtTm
+```
+
+**质量规范**：
+```yaml
+数据质量规范:
+  完整性:
+    - 主键字段不允许为空
+    - 必填字段空值率 < 5%
+
+  准确性:
+    - 金额字段精度：DECIMAL(18,2)
+    - 日期格式统一：yyyy-MM-dd HH:mm:ss
+
+  一致性:
+    - 枚举值必须使用标准枚举
+    - 关联字段类型必须一致
+
+  及时性:
+    - T+1表：次日上午9点前产出
+    - 实时表：延迟 < 5分钟
+```
+
+#### 6.3.2 数仓组织
+
+**组织架构配置**：
+```yaml
+数仓组织架构:
+  数仓委员会:
+    职责: 数仓规划、标准制定、重大决策
+    成员: CTO、各BU技术负责人、DBA Team Leader
+
+  数仓管理团队:
+    职责: 日常管理、审批、质量监控
+    角色:
+      - 数仓架构师: 架构设计、技术选型
+      - DBA: 权限管理、性能优化
+      - 数据开发: 表创建、ETL开发
+      - 数据分析师: 需求提出、数据使用
+
+  权限分级:
+    Level 1 - 查看权限: 所有员工
+    Level 2 - 开发权限: 数据开发工程师
+    Level 3 - 管理权限: DBA、数仓架构师
+    Level 4 - 超级权限: 数仓委员会成员
+```
+
+### 6.4 自定义标签配置
+
+**标签体系**：
+```java
+/**
+ * 自定义标签
+ */
+public class CustomTag {
+    private String tagKey;      // 标签键
+    private String tagValue;    // 标签值
+    private String category;    // 标签分类
+}
+```
+
+**预定义标签类别**：
+| 标签分类 | 标签示例 | 说明 |
+|---------|---------|------|
+| 项目标签 | project:双11、project:春运 | 关联的项目或活动 |
+| 团队标签 | team:数据平台、team:BI | 负责团队 |
+| 技术标签 | tech:实时、tech:离线 | 技术特征 |
+| 质量标签 | quality:已验证、quality:待验证 | 数据质量状态 |
+| 业务标签 | biz:核心、biz:临时 | 业务重要性 |
+
+### 6.5 配置项管理
+
+#### 6.5.1 系统配置项
+
+```yaml
+系统配置:
+  搜索配置:
+    elasticsearch.index.shards: 3                    # ES分片数
+    elasticsearch.index.replicas: 1                  # ES副本数
+    search.page.max_size: 100                        # 搜索最大分页
+    search.timeout: 30s                              # 搜索超时时间
+
+  缓存配置:
+    cache.table.ttl: 3600                            # 表缓存TTL（秒）
+    cache.field.ttl: 3600                            # 字段缓存TTL（秒）
+    cache.enum.ttl: 86400                            # 枚举缓存TTL（秒）
+    cache.hot.keywords.ttl: 3600                     # 热词缓存TTL（秒）
+
+  审批配置:
+    approval.timeout.days: 3                         # 审批超时天数
+    approval.auto.approve.level: P3                  # 自动审批级别
+    approval.notify.channels: [email, wechat]        # 通知渠道
+
+  分区配置:
+    partition.default.retain.days: 90                # 默认分区保留天数
+    partition.max.count: 365                         # 最大分区数
+    partition.cleanup.schedule: "0 0 2 * * ?"        # 清理定时任务
+```
+
+#### 6.5.2 业务配置项
+
+```yaml
+业务配置:
+  表创建限制:
+    table.name.max_length: 128                       # 表名最大长度
+    table.desc.max_length: 2000                      # 表描述最大长度
+    field.count.max: 500                             # 最大字段数
+    field.name.max_length: 64                        # 字段名最大长度
+
+  SQL校验:
+    sql.validate.enabled: true                       # 是否启用SQL校验
+    sql.max_length: 100000                           # SQL最大长度
+    sql.timeout: 60s                                 # SQL校验超时
+
+  权限控制:
+    permission.check.enabled: true                   # 是否启用权限检查
+    permission.default.role: VIEWER                  # 默认角色
+    permission.sensitive.require_approval: true      # 敏感数据需审批
+```
+
+---
+
+## 7. 部署架构
+
+### 7.1 部署架构图
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                        负载均衡层 (Nginx)                       │
+│                    (SSL终止、静态资源、反向代理)                   │
+└──────────────────────────────────────────────────────────────┘
+                              ↓
+┌──────────────────────────────────────────────────────────────┐
+│                    应用服务层 (K8s Pods)                        │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐             │
+│  │ App Pod 1  │  │ App Pod 2  │  │ App Pod N  │             │
+│  │ (Spring)   │  │ (Spring)   │  │ (Spring)   │             │
+│  └────────────┘  └────────────┘  └────────────┘             │
+└──────────────────────────────────────────────────────────────┘
+                              ↓
+┌──────────────────────────────────────────────────────────────┐
+│                        数据存储层                              │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐             │
+│  │MySQL集群   │  │  ES集群     │  │ Redis集群  │             │
+│  │(Master-    │  │(3节点)     │  │(Sentinel)  │             │
+│  │ Slave)     │  │            │  │            │             │
+│  └────────────┘  └────────────┘  └────────────┘             │
+│  ┌────────────┐                                              │
+│  │Nebula集群  │                                              │
+│  │(3节点)     │                                              │
+│  └────────────┘                                              │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 7.2 容器化部署
+
+#### 7.2.1 Dockerfile示例
+
+```dockerfile
+FROM openjdk:8-jdk-alpine
+VOLUME /tmp
+ARG JAR_FILE=target/*.jar
+COPY ${JAR_FILE} app.jar
+ENTRYPOINT ["java","-Djava.security.egd=file:/dev/./urandom","-jar","/app.jar"]
+```
+
+#### 7.2.2 Kubernetes部署配置
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metadata-service
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: metadata-service
+  template:
+    metadata:
+      labels:
+        app: metadata-service
+    spec:
+      containers:
+      - name: metadata-service
+        image: metadata-service:1.0.0
+        ports:
+        - containerPort: 8080
+        env:
+        - name: SPRING_PROFILES_ACTIVE
+          value: "prod"
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /actuator/health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 5
+```
+
+### 7.3 环境规划
+
+| 环境 | 用途 | 配置 | 数据 |
+|-----|------|------|------|
+| **开发环境** | 开发调试 | 单节点，最小配置 | 模拟数据 |
+| **测试环境** | 功能测试、集成测试 | 单节点，中等配置 | 测试数据 |
+| **预发环境** | 上线前验证 | 集群部署，生产级配置 | 生产数据镜像 |
+| **生产环境** | 线上服务 | 高可用集群 | 真实数据 |
+
+---
+
+## 8. 安全架构
+
+### 8.1 安全防护体系
+
+```
+┌────────────────────────────────────────────────────────────┐
+│                       安全防护层次                           │
+├────────────────────────────────────────────────────────────┤
+│  网络层安全                                                  │
+│  - VPC隔离、安全组、防火墙、DDoS防护                          │
+├────────────────────────────────────────────────────────────┤
+│  接入层安全                                                  │
+│  - HTTPS加密、证书管理、WAF防护                               │
+├────────────────────────────────────────────────────────────┤
+│  应用层安全                                                  │
+│  - 认证鉴权(JWT)、接口签名、限流熔断、XSS防护、CSRF防护        │
+├────────────────────────────────────────────────────────────┤
+│  数据层安全                                                  │
+│  - SQL注入防护、敏感数据加密、数据脱敏、权限控制               │
+├────────────────────────────────────────────────────────────┤
+│  审计层安全                                                  │
+│  - 操作日志、审计日志、异常告警                               │
+└────────────────────────────────────────────────────────────┘
+```
+
+### 8.2 认证与授权
+
+#### 8.2.1 认证流程
+
+```
+1. 用户登录 → 2. 验证账号密码 → 3. 生成JWT Token → 4. 返回Token
+                                                        ↓
+5. 后续请求携带Token → 6. 验证Token → 7. 提取用户信息 → 8. 鉴权 → 9. 业务处理
+```
+
+#### 8.2.2 权限模型（RBAC）
+
+```
+User (用户) → N:M → Role (角色) → N:M → Permission (权限)
+
+角色定义：
+- ADMIN：管理员，拥有所有权限
+- DBA：数据库管理员，可创建/修改表
+- DEVELOPER：开发者，可查询表、提交审批
+- VIEWER：访客，只读权限
+
+权限定义：
+- metadata:table:create    # 创建表
+- metadata:table:update    # 修改表
+- metadata:table:delete    # 删除表
+- metadata:table:view      # 查看表
+- approval:approve         # 审批权限
+```
+
+### 8.3 数据安全
+
+#### 8.3.1 敏感数据加密
+
+```java
+/**
+ * 敏感字段加密存储
+ *
+ * 1. 对称加密（AES-256）
+ *    - 用于加密字段值（手机号、身份证等）
+ *
+ * 2. 非对称加密（RSA）
+ *    - 用于密钥交换
+ *
+ * 3. 单向哈希（SHA-256）
+ *    - 用于密码存储
+ */
+@TableField(typeHandler = EncryptTypeHandler.class)
+private String sensitiveData;
+```
+
+#### 8.3.2 数据脱敏
+
+```java
+/**
+ * 数据脱敏规则
+ *
+ * - 手机号：138****1234
+ * - 身份证：110101********1234
+ * - 邮箱：abc***@example.com
+ * - 姓名：张**
+ */
+@JsonSerialize(using = SensitiveDataSerializer.class)
+@SensitiveData(type = SensitiveTypeEnum.MOBILE)
+private String mobile;
+```
+
+### 8.4 SQL注入防护
+
+```java
+/**
+ * SQL注入防护措施
+ *
+ * 1. 使用MyBatis Plus参数化查询（#{}）
+ * 2. 禁止拼接SQL（严禁${}用于用户输入）
+ * 3. 输入校验（白名单、正则）
+ * 4. 最小权限原则（数据库账号权限）
+ */
+
+// ✅ 正确示例
+@Select("SELECT * FROM metadata_table WHERE id = #{id}")
+MetadataTable selectById(@Param("id") Long id);
+
+// ❌ 错误示例（严禁）
+@Select("SELECT * FROM metadata_table WHERE id = ${id}")
+MetadataTable selectById(@Param("id") Long id);
+```
+
+---
+
+## 9. 核心模块设计
+
+### 9.1 表管理模块
+
+#### 9.1.1 模块职责
+
+- 元数据表的CRUD操作
+- 表信息的搜索与分页查询
+- 表详情展示（包括字段信息）
+- 表创建/修改的审批流程
+- 建表SQL生成与语法校验
+
+#### 9.1.2 核心流程：表创建
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      表创建流程                               │
+└─────────────────────────────────────────────────────────────┘
+
+1. 前端提交表创建请求
+        ↓
+2. 参数校验（Validator）
+        ↓
+3. 业务规则校验
+   - 表名唯一性检查
+   - 命名规范检查
+   - 字段数量限制检查
+        ↓
+4. 生成建表SQL（根据数据源类型）
+   - HiveStrategy → Hive DDL
+   - BigQueryStrategy → BigQuery DDL
+        ↓
+5. SQL语法校验
+   - 提交到对应引擎进行语法校验
+   - 返回校验结果
+        ↓
+6. 保存元数据到MySQL
+   - 事务开始
+   - 插入metadata_table
+   - 插入metadata_field（批量）
+   - 插入operation_history
+   - 事务提交
+        ↓
+7. 同步到Elasticsearch
+   - 异步写入ES索引
+        ↓
+8. 发起审批流程
+   - 创建approval_flow记录
+   - 通知审批人
+        ↓
+9. 返回表ID
+
+审批通过后：
+10. 执行建表SQL（调用外部引擎）
+11. 更新表状态
+12. 写入操作历史
+```
+
+#### 9.1.3 核心代码示例
+
+```java
+@Service
+@Slf4j
+public class MetadataTableServiceImpl implements IMetadataTableService {
+
+    @Autowired
+    private MetadataTableMapper metadataTableMapper;
+
+    @Autowired
+    private MetadataFieldMapper metadataFieldMapper;
+
+    @Autowired
+    private DataSourceStrategyFactory strategyFactory;
+
+    @Autowired
+    private IApprovalService approvalService;
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long createTable(TableCreateRequest request) {
+        // 1. 校验表是否已存在
+        validateTableNotExists(request.getDatabaseId(), request.getTableName());
+
+        // 2. 获取数据源策略
+        DataSourceStrategy strategy = strategyFactory.getStrategy(
+            request.getDataSourceType()
+        );
+
+        // 3. 生成建表SQL
+        String createSql = strategy.generateCreateTableSql(request);
+
+        // 4. SQL语法校验
+        strategy.validateSql(createSql);
+
+        // 5. 保存表元数据
+        MetadataTable table = convertToEntity(request);
+        table.setCreateSql(createSql);
+        metadataTableMapper.insert(table);
+
+        // 6. 批量保存字段元数据
+        List<MetadataField> fields = convertToFieldEntities(
+            request.getFields(), table.getId()
+        );
+        metadataFieldMapper.batchInsert(fields);
+
+        // 7. 异步同步到ES
+        syncToElasticsearch(table, fields);
+
+        // 8. 发起审批流程
+        approvalService.startApproval(
+            ApprovalTypeEnum.TABLE_CREATE, table.getId()
+        );
+
+        log.info("表创建成功，表ID: {}, 表名: {}", table.getId(), table.getTableName());
+        return table.getId();
+    }
+}
+```
+
+### 9.2 搜索模块
+
+#### 9.2.1 搜索架构
+
+```
+用户输入搜索关键词
+        ↓
+┌─────────────────────────────────────┐
+│   搜索服务层 (SearchService)         │
+├─────────────────────────────────────┤
+│  1. 构建ES查询DSL                    │
+│  2. 执行搜索                         │
+│  3. 结果聚合与排序                    │
+│  4. 高亮处理                         │
+└─────────────────────────────────────┘
+        ↓
+┌─────────────────────────────────────┐
+│   Elasticsearch集群                 │
+├─────────────────────────────────────┤
+│  - 分词：IK分词器 + 拼音分词          │
+│  - 匹配：multi_match多字段匹配        │
+│  - 过滤：bool查询（数据源、分层等）    │
+│  - 排序：相关性评分 + 时间             │
+└─────────────────────────────────────┘
+        ↓
+返回搜索结果（分页）
+```
+
+#### 9.2.2 搜索查询DSL示例
+
+```json
+{
+  "query": {
+    "bool": {
+      "must": [
+        {
+          "multi_match": {
+            "query": "订单",
+            "fields": [
+              "table_name^3",
+              "table_desc^2",
+              "database_name"
+            ],
+            "type": "best_fields",
+            "operator": "or"
+          }
+        }
+      ],
+      "filter": [
+        {"term": {"data_source_type": "Hive"}},
+        {"term": {"warehouse_layer": "cdm"}},
+        {"term": {"primary_theme": "ord"}}
+      ]
+    }
+  },
+  "highlight": {
+    "fields": {
+      "table_name": {},
+      "table_desc": {}
+    }
+  },
+  "from": 0,
+  "size": 20,
+  "sort": [
+    {"_score": "desc"},
+    {"create_time": "desc"}
+  ]
+}
+```
+
+#### 9.2.3 支持的搜索场景
+
+| 搜索场景 | 实现方式 | 示例 |
+|---------|---------|------|
+| **表名搜索** | table_name字段匹配 | "订单表" → order_table |
+| **字段名搜索** | 搜索field_index，返回表信息 | "user_id" → 包含该字段的所有表 |
+| **库名搜索** | database_name字段匹配 | "ods" → ods库下的所有表 |
+| **库名+表名** | 组合匹配 | "ods.order" → ods.order_table |
+| **中文搜索** | IK分词器 | "用户订单" → user_order_table |
+| **拼音搜索** | 拼音分词器 | "dingdan" → 订单表 |
+| **模糊搜索** | wildcard查询 | "order*" → order_table, order_detail |
+
+### 9.3 审批模块
+
+#### 9.3.1 审批流程设计
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      审批流程状态机                           │
+└─────────────────────────────────────────────────────────────┘
+
+                   ┌─────────┐
+                   │ PENDING │ (待审批)
+                   └─────────┘
+                        │
+         ┌──────────────┼──────────────┐
+         ↓              ↓              ↓
+    ┌─────────┐    ┌─────────┐   ┌─────────┐
+    │APPROVED │    │REJECTED │   │CANCELLED│
+    │(已通过) │    │(已拒绝) │   │(已取消) │
+    └─────────┘    └─────────┘   └─────────┘
+         │
+         ↓
+    ┌─────────┐
+    │PUBLISHED│ (已发布)
+    └─────────┘
+```
+
+#### 9.3.2 审批策略模式
+
+```java
+/**
+ * 审批策略接口
+ */
+public interface ApprovalStrategy {
+    /**
+     * 获取审批人列表
+     */
+    List<String> getApprovers(Long businessId);
+
+    /**
+     * 审批通过后的回调
+     */
+    void onApproved(Long businessId);
+
+    /**
+     * 审批拒绝后的回调
+     */
+    void onRejected(Long businessId);
+}
+
+/**
+ * 表创建审批策略
+ */
+@Component
+public class TableCreateApprovalStrategy implements ApprovalStrategy {
+
+    @Override
+    public List<String> getApprovers(Long tableId) {
+        // 获取表的责任人、DBA作为审批人
+        MetadataTable table = metadataTableMapper.selectById(tableId);
+        List<String> approvers = new ArrayList<>();
+        approvers.add(table.getOwner());
+        approvers.addAll(getDbaList());
+        return approvers;
+    }
+
+    @Override
+    public void onApproved(Long tableId) {
+        // 执行建表SQL
+        executeDdl(tableId);
+        // 更新表状态为已发布
+        updateTableStatus(tableId, TableStatusEnum.PUBLISHED);
+    }
+
+    @Override
+    public void onRejected(Long tableId) {
+        // 更新表状态为审批拒绝
+        updateTableStatus(tableId, TableStatusEnum.REJECTED);
+    }
+}
+```
+
+### 9.4 血缘分析模块
+
+#### 9.4.1 血缘关系构建
+
+```
+数据来源：
+1. 解析SQL语句（INSERT、CREATE TABLE AS SELECT）
+   - 正则解析
+   - SQL Parser（Calcite、JSqlParser）
+
+2. 手动维护
+   - 用户手动添加血缘关系
+
+血缘关系存储：
+- 表级血缘：存储到Nebula Graph
+- 字段级血缘：存储到Nebula Graph（包含转换逻辑）
+
+血缘查询：
+- 上游依赖查询（N度）
+- 下游影响分析（N度）
+- 血缘链路可视化（前端渲染）
+```
+
+#### 9.4.2 血缘查询API
+
+```java
+@Service
+public class LineageServiceImpl implements ILineageService {
+
+    @Autowired
+    private NebulaGraphClient nebulaClient;
+
+    @Override
+    public LineageVO getUpstreamLineage(Long tableId, Integer depth) {
+        // 查询上游依赖
+        String nGql = String.format(
+            "GO %d STEPS FROM \"table:%d\" OVER TABLE_DEPEND REVERSELY " +
+            "YIELD TABLE_DEPEND._dst AS upstream_table",
+            depth, tableId
+        );
+
+        ResultSet resultSet = nebulaClient.execute(nGql);
+        return buildLineageTree(resultSet, LineageDirectionEnum.UPSTREAM);
+    }
+
+    @Override
+    public LineageVO getDownstreamLineage(Long tableId, Integer depth) {
+        // 查询下游影响
+        String nGql = String.format(
+            "GO %d STEPS FROM \"table:%d\" OVER TABLE_DEPEND " +
+            "YIELD TABLE_DEPEND._dst AS downstream_table",
+            depth, tableId
+        );
+
+        ResultSet resultSet = nebulaClient.execute(nGql);
+        return buildLineageTree(resultSet, LineageDirectionEnum.DOWNSTREAM);
+    }
+}
+```
+
+---
+
+## 10. 接口设计
+
+### 10.1 RESTful API规范
+
+#### 10.1.1 URL设计规范
+
+```
+基础URL：/api/metadata
+
+资源命名：使用名词复数
+- /api/metadata/tables          # 表资源
+- /api/metadata/fields          # 字段资源
+- /api/metadata/approvals       # 审批资源
+
+HTTP方法映射：
+- GET /api/metadata/tables              # 查询表列表
+- GET /api/metadata/tables/{id}         # 查询表详情
+- POST /api/metadata/tables             # 创建表
+- PUT /api/metadata/tables/{id}         # 更新表（全量）
+- PATCH /api/metadata/tables/{id}       # 更新表（部分）
+- DELETE /api/metadata/tables/{id}      # 删除表
+```
+
+#### 10.1.2 统一响应格式
+
+```java
+/**
+ * 统一响应结果
+ */
+@Data
+public class Result<T> {
+    private Integer code;          // 响应码
+    private String message;        // 响应消息
+    private T data;                // 响应数据
+    private Long timestamp;        // 时间戳
+
+    public static <T> Result<T> success(T data) {
+        Result<T> result = new Result<>();
+        result.setCode(200);
+        result.setMessage("操作成功");
+        result.setData(data);
+        result.setTimestamp(System.currentTimeMillis());
+        return result;
+    }
+
+    public static <T> Result<T> error(String message) {
+        Result<T> result = new Result<>();
+        result.setCode(500);
+        result.setMessage(message);
+        result.setTimestamp(System.currentTimeMillis());
+        return result;
+    }
+}
+```
+
+### 10.2 核心API列表
+
+#### 10.2.1 表管理API
+
+| API | 方法 | URL | 描述 |
+|-----|------|-----|------|
+| 分页查询表 | GET | /api/metadata/tables/page | 分页查询表列表 |
+| 搜索表 | POST | /api/metadata/tables/search | 全文搜索表 |
+| 查询表详情 | GET | /api/metadata/tables/{id} | 查询表详细信息 |
+| 创建表 | POST | /api/metadata/tables | 创建表 |
+| 更新表 | PUT | /api/metadata/tables/{id} | 更新表信息 |
+| 删除表 | DELETE | /api/metadata/tables/{id} | 删除表 |
+| 生成建表SQL | POST | /api/metadata/tables/generate-sql | 生成建表SQL |
+| 校验SQL语法 | POST | /api/metadata/tables/validate-sql | 校验SQL语法 |
+
+#### 10.2.2 字段管理API
+
+| API | 方法 | URL | 描述 |
+|-----|------|-----|------|
+| 查询表字段 | GET | /api/metadata/fields/table/{tableId} | 查询表的所有字段 |
+| 添加字段 | POST | /api/metadata/fields | 添加字段 |
+| 更新字段 | PUT | /api/metadata/fields/{id} | 更新字段 |
+| 删除字段 | DELETE | /api/metadata/fields/{id} | 删除字段 |
+
+#### 10.2.3 审批管理API
+
+| API | 方法 | URL | 描述 |
+|-----|------|-----|------|
+| 查询审批列表 | GET | /api/metadata/approvals | 查询审批列表 |
+| 查询审批详情 | GET | /api/metadata/approvals/{id} | 查询审批详情 |
+| 提交审批 | POST | /api/metadata/approvals | 提交审批申请 |
+| 审批通过 | POST | /api/metadata/approvals/{id}/approve | 审批通过 |
+| 审批拒绝 | POST | /api/metadata/approvals/{id}/reject | 审批拒绝 |
+| 取消审批 | POST | /api/metadata/approvals/{id}/cancel | 取消审批 |
+
+#### 10.2.4 血缘分析API
+
+| API | 方法 | URL | 描述 |
+|-----|------|-----|------|
+| 查询上游血缘 | GET | /api/metadata/lineage/{tableId}/upstream | 查询表的上游血缘 |
+| 查询下游血缘 | GET | /api/metadata/lineage/{tableId}/downstream | 查询表的下游血缘 |
+| 查询字段血缘 | GET | /api/metadata/lineage/field/{fieldId} | 查询字段血缘 |
+
+### 10.3 接口文档示例
+
+#### 10.3.1 表搜索接口
+
+```yaml
+接口名称: 搜索表
+请求方式: POST
+请求URL: /api/metadata/tables/search
+Content-Type: application/json
+
+请求参数:
+{
+  "keyword": "订单",                    # 搜索关键词（表名/字段名/库名）
+  "dataSourceType": "Hive",             # 数据源类型（可选）
+  "warehouseLayer": "cdm",              # 数仓分层（可选）
+  "primaryTheme": "ord",                # 一级主题（可选）
+  "owner": "zhangsan",                  # 责任人（可选）
+  "pageNum": 1,                         # 页码
+  "pageSize": 20                        # 每页大小
+}
+
+响应示例:
+{
+  "code": 200,
+  "message": "操作成功",
+  "data": {
+    "total": 100,
+    "pageNum": 1,
+    "pageSize": 20,
+    "pages": 5,
+    "list": [
+      {
+        "id": 123,
+        "tableName": "order_table",
+        "databaseName": "ods",
+        "dataSourceType": "Hive",
+        "tableDesc": "订单表",
+        "warehouseLayer": "cdm",
+        "primaryTheme": "ord",
+        "owner": "zhangsan",
+        "createTime": "2026-01-10 10:00:00"
+      }
+    ]
+  },
+  "timestamp": 1704873600000
+}
+```
+
+---
+
+## 11. 数据流设计
+
+### 11.1 写入数据流
+
+```
+┌────────────────────────────────────────────────────────────┐
+│                     写入数据流程                             │
+└────────────────────────────────────────────────────────────┘
+
+用户操作（创建表）
+        ↓
+Controller层（参数校验）
+        ↓
+Service层（业务逻辑）
+        ↓
+    ┌───┴───┐
+    ↓       ↓
+MySQL存储  Redis缓存删除
+    ↓
+事务提交
+    ↓
+异步任务
+    ├→ 同步到Elasticsearch
+    ├→ 同步到Nebula Graph（如有血缘）
+    └→ 发送通知（审批、邮件等）
+```
+
+### 11.2 查询数据流
+
+```
+┌────────────────────────────────────────────────────────────┐
+│                     查询数据流程                             │
+└────────────────────────────────────────────────────────────┘
+
+用户查询请求
+        ↓
+Controller层
+        ↓
+Service层
+        ↓
+    判断查询类型
+        ├→ 详情查询 → Redis缓存查询
+        │               ↓ 未命中
+        │           MySQL查询 → 写入缓存
+        │
+        ├→ 搜索查询 → Elasticsearch查询
+        │
+        └→ 血缘查询 → Nebula Graph查询
+        ↓
+返回结果
+```
+
+### 11.3 数据同步机制
+
+#### 11.3.1 MySQL → Elasticsearch同步
+
+```java
+/**
+ * ES同步策略
+ *
+ * 1. 实时同步（异步）
+ *    - 监听MySQL变更事件（Spring Event）
+ *    - 异步线程池执行ES写入
+ *
+ * 2. 定时全量同步
+ *    - 每日凌晨执行全量同步
+ *    - 保证数据最终一致性
+ *
+ * 3. 手动触发同步
+ *    - 提供管理接口，手动触发同步
+ */
+
+@Component
+public class MetadataEsSyncListener {
+
+    @Async("esAsyncExecutor")
+    @EventListener
+    public void onTableCreated(TableCreatedEvent event) {
+        MetadataTable table = event.getTable();
+        // 同步到ES
+        elasticsearchService.indexTable(table);
+    }
+}
+```
+
+#### 11.3.2 数据一致性保证
+
+```
+一致性策略：最终一致性
+
+1. MySQL为主数据源（Source of Truth）
+2. Redis、ES、Nebula为从数据源
+3. 写操作优先写MySQL，事务提交后异步同步到从数据源
+4. 读操作优先读缓存/ES，缓存未命中则读MySQL
+5. 定时任务进行数据一致性校验和修复
+```
+
+---
+
+## 12. 关键技术方案
+
+### 12.1 多数据源支持
+
+#### 12.1.1 策略模式实现
+
+```java
+/**
+ * 数据源策略工厂
+ */
+@Component
+public class DataSourceStrategyFactory {
+
+    @Autowired
+    private Map<String, DataSourceStrategy> strategyMap;
+
+    public DataSourceStrategy getStrategy(DataSourceTypeEnum type) {
+        String beanName = type.name().toLowerCase() + "Strategy";
+        DataSourceStrategy strategy = strategyMap.get(beanName);
+        if (strategy == null) {
+            throw new BusinessException("不支持的数据源类型: " + type);
+        }
+        return strategy;
+    }
+}
+
+/**
+ * 数据源策略接口
+ */
+public interface DataSourceStrategy {
+    /**
+     * 生成建表SQL
+     */
+    String generateCreateTableSql(TableCreateRequest request);
+
+    /**
+     * 生成修改表SQL
+     */
+    String generateAlterTableSql(TableUpdateRequest request);
+
+    /**
+     * SQL语法校验
+     */
+    void validateSql(String sql);
+
+    /**
+     * 执行DDL
+     */
+    void executeDdl(String sql);
+}
+
+/**
+ * Hive策略实现
+ */
+@Component("hiveStrategy")
+public class HiveStrategy implements DataSourceStrategy {
+
+    @Override
+    public String generateCreateTableSql(TableCreateRequest request) {
+        StringBuilder sql = new StringBuilder();
+        sql.append("CREATE TABLE ").append(request.getTableName()).append(" (\n");
+
+        // 字段定义
+        List<String> fieldDefs = request.getFields().stream()
+            .map(f -> String.format("  %s %s COMMENT '%s'",
+                f.getFieldName(), f.getFieldType(), f.getFieldDesc()))
+            .collect(Collectors.toList());
+        sql.append(String.join(",\n", fieldDefs));
+        sql.append("\n)");
+
+        // 表注释
+        sql.append(" COMMENT '").append(request.getTableDesc()).append("'");
+
+        // 分区字段
+        if (request.getPartitionFields() != null) {
+            sql.append("\nPARTITIONED BY (");
+            // ... 分区字段逻辑
+            sql.append(")");
+        }
+
+        // 存储格式
+        sql.append("\nSTORED AS PARQUET");
+
+        return sql.toString();
+    }
+}
+```
+
+### 12.2 富文本存储
+
+```java
+/**
+ * 富文本存储方案
+ *
+ * 1. 存储格式：HTML
+ * 2. XSS防护：使用OWASP Java HTML Sanitizer
+ * 3. 长度限制：最大64KB
+ */
+
+@Component
+public class RichTextSanitizer {
+
+    private static final PolicyFactory POLICY = Sanitizers.FORMATTING
+        .and(Sanitizers.BLOCKS)
+        .and(Sanitizers.LINKS)
+        .and(Sanitizers.IMAGES)
+        .and(Sanitizers.TABLES);
+
+    public String sanitize(String richText) {
+        if (StringUtils.isBlank(richText)) {
+            return richText;
+        }
+        return POLICY.sanitize(richText);
+    }
+}
+```
+
+### 12.3 分布式锁
+
+```java
+/**
+ * 分布式锁应用场景
+ *
+ * 1. 审批流程并发控制
+ * 2. 定时任务防重
+ * 3. 缓存更新并发控制
+ */
+
+@Service
+public class ApprovalServiceImpl implements IApprovalService {
+
+    @Autowired
+    private RedissonClient redissonClient;
+
+    @Override
+    public void approve(Long approvalId, String approver) {
+        String lockKey = "approval:lock:" + approvalId;
+        RLock lock = redissonClient.getLock(lockKey);
+
+        try {
+            // 尝试加锁，最多等待10秒，锁30秒后自动释放
+            if (lock.tryLock(10, 30, TimeUnit.SECONDS)) {
+                // 执行审批逻辑
+                doApprove(approvalId, approver);
+            } else {
+                throw new BusinessException("审批操作繁忙，请稍后再试");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new BusinessException("审批操作被中断");
+        } finally {
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
+    }
+}
+```
+
+### 12.4 异步任务处理
+
+```java
+/**
+ * 异步任务配置
+ */
+@Configuration
+@EnableAsync
+public class AsyncConfig {
+
+    @Bean("asyncExecutor")
+    public ThreadPoolTaskExecutor asyncExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(10);
+        executor.setMaxPoolSize(20);
+        executor.setQueueCapacity(200);
+        executor.setThreadNamePrefix("async-");
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        executor.initialize();
+        return executor;
+    }
+}
+
+/**
+ * 异步任务应用
+ */
+@Service
+public class NotificationService {
+
+    @Async("asyncExecutor")
+    public void sendApprovalNotification(Long approvalId) {
+        // 发送审批通知（邮件、企业微信等）
+        log.info("发送审批通知: {}", approvalId);
+    }
+}
+```
+
+---
+
+## 13. 非功能性需求
+
+### 13.1 性能要求
+
+| 指标 | 目标值 | 说明 |
+|-----|-------|------|
+| **接口响应时间** | P95 < 500ms | 95%的请求在500ms内响应 |
+| **搜索响应时间** | P99 < 1s | 99%的搜索在1秒内返回 |
+| **并发用户数** | 1000+ | 支持1000+用户同时在线 |
+| **TPS** | 1000+ | 每秒处理1000+事务 |
+| **数据库连接池** | 最大100 | HikariCP连接池最大连接数 |
+
+### 13.2 可用性要求
+
+| 指标 | 目标值 | 实现方案 |
+|-----|-------|---------|
+| **系统可用性** | 99.9% | 高可用部署、故障自动切换 |
+| **数据可用性** | 99.99% | MySQL主从复制、定期备份 |
+| **RTO** | < 1小时 | 故障恢复时间目标 |
+| **RPO** | < 5分钟 | 数据丢失时间目标 |
+
+### 13.3 扩展性要求
+
+- **水平扩展**：应用层无状态，支持水平扩展
+- **数据库扩展**：MySQL支持读写分离、分库分表（预留）
+- **缓存扩展**：Redis集群模式
+- **搜索扩展**：ES集群模式，支持节点动态扩容
+
+### 13.4 监控与告警
+
+```
+监控体系：
+├── 应用监控（Spring Boot Actuator + Prometheus）
+│   ├── JVM监控（内存、线程、GC）
+│   ├── 接口监控（QPS、RT、错误率）
+│   └── 业务监控（表创建数、审批通过率）
+│
+├── 基础设施监控（Prometheus + Grafana）
+│   ├── MySQL监控（连接数、慢查询、主从延迟）
+│   ├── Redis监控（内存使用、命中率、慢查询）
+│   └── ES监控（集群状态、索引大小、查询性能）
+│
+└── 日志监控（ELK Stack）
+    ├── 错误日志告警
+    ├── 慢查询告警
+    └── 业务异常告警
+
+告警规则：
+- 接口错误率 > 1% → 告警
+- 接口P95响应时间 > 1s → 告警
+- MySQL主从延迟 > 10s → 告警
+- Redis内存使用率 > 80% → 告警
+- 磁盘使用率 > 85% → 告警
+```
+
+### 13.5 容灾备份
+
+```
+备份策略：
+├── 数据库备份
+│   ├── 全量备份：每日凌晨2点执行
+│   ├── 增量备份：每小时执行一次
+│   └── 备份保留：全量备份保留30天，增量备份保留7天
+│
+├── 配置备份
+│   └── Git版本控制
+│
+└── 应用镜像备份
+    └── Docker镜像仓库（保留最近10个版本）
+
+容灾方案：
+- 同城双活：同城两个机房部署
+- 异地灾备：异地机房定期同步数据
+- 故障自动切换：基于Kubernetes的自动故障转移
+```
+
+---
+
+## 14. 架构演进规划
+
+### 14.1 第一阶段（MVP）- 当前设计
+
+**目标**：快速实现核心功能，验证业务价值
+
+**范围**：
+- ✅ 表/字段元数据管理
+- ✅ 基础搜索功能
+- ✅ 表创建审批流程
+- ✅ 数据标准管理
+- ✅ 操作历史记录
+
+**架构**：单体应用 + MySQL + Redis + ES
+
+### 14.2 第二阶段（优化）
+
+**目标**：性能优化、体验提升
+
+**范围**：
+- 🔄 完善搜索功能（拼音搜索、同义词）
+- 🔄 血缘分析（表级血缘）
+- 🔄 权限管理（RBAC）
+- 🔄 批量操作
+- 🔄 数据质量监控集成
+
+**优化**：
+- 引入本地缓存（Caffeine）
+- 数据库读写分离
+- ES查询性能优化
+
+### 14.3 第三阶段（扩展）
+
+**目标**：功能扩展、生态集成
+
+**范围**：
+- 📋 字段级血缘
+- 📋 数据地图可视化
+- 📋 元数据版本管理
+- 📋 数据资产评估
+- 📋 与数据开发平台集成
+
+**架构演进**：
+- 微服务拆分（表管理服务、搜索服务、审批服务）
+- 服务网格（Istio）
+- 事件驱动架构（Kafka）
+
+### 14.4 第四阶段（智能化）
+
+**目标**：AI赋能、智能推荐
+
+**范围**：
+- 🚀 智能建表推荐
+- 🚀 表命名规范检查（NLP）
+- 🚀 数据质量智能预警
+- 🚀 血缘关系自动发现（SQL解析）
+
+---
+
+## 附录
+
+### A. 技术选型对比
+
+#### A.1 搜索引擎选型
+
+| 方案 | 优点 | 缺点 | 结论 |
+|-----|------|------|------|
+| **MySQL LIKE** | 简单、无额外组件 | 性能差、不支持分词 | ❌ 不适合 |
+| **Elasticsearch** | 性能好、分词能力强、生态丰富 | 运维复杂、资源消耗高 | ✅ 推荐 |
+| **Solr** | 功能完善、文档丰富 | 较ES笨重、社区活跃度低 | ⚠️ 备选 |
+
+#### A.2 图数据库选型
+
+| 方案 | 优点 | 缺点 | 结论 |
+|-----|------|------|------|
+| **Nebula Graph** | 高性能、国产开源、社区活跃 | 生态相对较新 | ✅ 推荐 |
+| **Neo4j** | 成熟、生态好、Cypher语言强大 | 社区版功能限制、商业版昂贵 | ⚠️ 备选 |
+| **JanusGraph** | 开源、可扩展 | 性能一般、运维复杂 | ❌ 不适合 |
+
+### B. 数据库设计原则
+
+1. **三范式**：符合数据库三范式设计
+2. **软删除**：所有表采用逻辑删除（deleted字段）
+3. **审计字段**：create_time、update_time、create_by、update_by
+4. **字符集**：utf8mb4（支持emoji）
+5. **引擎**：InnoDB（支持事务）
+6. **索引**：合理创建索引，避免过度索引
+
+### C. 代码规范检查清单
+
+- [ ] 类名、方法名、变量名符合命名规范
+- [ ] 公共方法包含JavaDoc注释
+- [ ] 无硬编码魔法数字，使用常量定义
+- [ ] 异常处理完善，无空catch块
+- [ ] SQL使用参数化查询，无拼接SQL
+- [ ] 事务注解正确使用
+- [ ] 日志级别正确（ERROR/WARN/INFO/DEBUG）
+- [ ] 无System.out.println()调试代码
+- [ ] 代码格式化，无多余空行
+- [ ] import语句规范，无通配符导入
+
+---
+
+## 文档变更记录
+
+| 版本 | 日期 | 修改内容 | 修改人 |
+|------|------|----------|--------|
+| 1.0.0 | 2026-01-10 | 初始版本，完成总体架构设计 | System |
+
+---
+
+**文档结束**

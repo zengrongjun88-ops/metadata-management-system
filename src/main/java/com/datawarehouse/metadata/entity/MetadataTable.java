@@ -29,7 +29,7 @@ public class MetadataTable implements Serializable {
     @TableField("table_name")
     private String tableName;
 
-    @ApiModelProperty(value = "表注释")
+    @ApiModelProperty(value = "表描述(富文本)")
     @TableField("table_comment")
     private String tableComment;
 
@@ -37,25 +37,61 @@ public class MetadataTable implements Serializable {
     @TableField("database_name")
     private String databaseName;
 
-    @ApiModelProperty(value = "表类型")
-    @TableField("table_type")
-    private String tableType;
+    @ApiModelProperty(value = "数据源类型(Hive/Paimon/Iceberg/ClickHouse/BigQuery/StarRocks)")
+    @TableField("data_source")
+    private String dataSource;
 
-    @ApiModelProperty(value = "存储引擎")
-    @TableField("engine")
-    private String engine;
+    @ApiModelProperty(value = "Hive账号(租户)")
+    @TableField("hive_account")
+    private String hiveAccount;
 
-    @ApiModelProperty(value = "字符集")
-    @TableField("charset")
-    private String charset;
+    @ApiModelProperty(value = "表大小(字节)")
+    @TableField("table_size")
+    private Long tableSize;
 
-    @ApiModelProperty(value = "行数")
-    @TableField("row_count")
-    private Long rowCount;
+    @ApiModelProperty(value = "数仓分层(ods/edw/cdm/mid/dim/dwd/dws/ads)")
+    @TableField("warehouse_layer")
+    private String warehouseLayer;
 
-    @ApiModelProperty(value = "数据大小(MB)")
-    @TableField("data_size")
-    private Double dataSize;
+    @ApiModelProperty(value = "一级主题(usr/mkt/ord/fin/prd/prj/trf/srv)")
+    @TableField("theme_first")
+    private String themeFirst;
+
+    @ApiModelProperty(value = "二级主题")
+    @TableField("theme_second")
+    private String themeSecond;
+
+    @ApiModelProperty(value = "敏感等级(L1/L2/L3/L4)")
+    @TableField("sensitivity_level")
+    private String sensitivityLevel;
+
+    @ApiModelProperty(value = "重要等级(P0/P1/P2/P3)")
+    @TableField("importance_level")
+    private String importanceLevel;
+
+    @ApiModelProperty(value = "分区类型(FULL/INCR/NONE)")
+    @TableField("partition_type")
+    private String partitionType;
+
+    @ApiModelProperty(value = "分区保留天数")
+    @TableField("partition_retention_days")
+    private Integer partitionRetentionDays;
+
+    @ApiModelProperty(value = "更新频率(REALTIME/HOURLY/DAILY/WEEKLY/MONTHLY/ON_DEMAND)")
+    @TableField("update_frequency")
+    private String updateFrequency;
+
+    @ApiModelProperty(value = "责任人(域账号)")
+    @TableField("owner")
+    private String owner;
+
+    @ApiModelProperty(value = "自定义标签(JSON数组)")
+    @TableField("custom_tags")
+    private String customTags;
+
+    @ApiModelProperty(value = "建表SQL")
+    @TableField("create_sql")
+    private String createSql;
 
     @ApiModelProperty(value = "创建人")
     @TableField(value = "create_by", fill = FieldFill.INSERT)

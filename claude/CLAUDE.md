@@ -329,7 +329,38 @@ Closes #123
 2. 在PR中详细说明
 3. 获得Team Leader批准
 
-## 10. 更新记录
+## 10. 文档约束
+
+### 10.1 CLAUDE必须遵循的要求
+- CLAUDE每次进入项目必读，必须遵循的要求！
+- CLAUDE每次进入项目必读，必须遵循的要求！
+- 需要按照以下路径读取关键文档
+- 请严格按照关键文档约束进行系统开发
+
+| 文档类型 | 路径 | 用途 |
+|---------|-------|----------|
+| 需求文档 | claude/REQUIREMENT.md  | 了解业务需求 |
+| 架构设计 | claude/Architecture.MD | 理解系统架构 |
+| 工作约束 | claude/CLAUDE.md | 遵循开发规范 |
+| 项目结构 | claude/PROJECT_STRUCTURE.md | 快速定位文件 |
+| 实现指南 | claude/REALTIME_IMPLEMENTATION_GUIDE.md | 查看已实现功能 |
+| 验证指南 | claude/BROWSER_VERIFICATION_GUIDE.md | 进行功能验证 |
+
+### 10.2 生成文档要求
+- ✅ 请先理解输入需求和需求文档，做好系统改动规划，修改架构设计文档，做好深度思考
+- ✅ 需要改动系统请先更新架构设计文档（claude/Architecture.MD）
+- ✅ 需要改动系统请先更新项目结构文档（claude/PROJECT_STRUCTURE.md）
+- ✅ 需要改动系统请先更新实现指南文档（claude/PROJECT_STRUCTURE.md）
+- ✅ 系统设计文档，说明文档请放置到项目根目录下的claude目录
+- ✅ 相关运行脚本请放置到项目根目录下的bin目录，做好说明
+- ✅ 系统改动完成，验证完毕更新验证指南文档（claude/BROWSER_VERIFICATION_GUIDE.md）
+
+### 10.3 文档禁止事项
+- ❌ 禁止改动需求文档（claude/REQUIREMENT.md）
+- ❌ 禁止将生成的md文档放置在项目根目录下，应该放置到项目下的claude目录
+- ❌ 禁止随意改动工作约束文档（claude/CLAUDE.md），改动前请确认
+
+## 11. 更新记录
 
 | 版本 | 日期 | 修改内容 | 修改人 |
 |------|------|----------|--------|
